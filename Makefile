@@ -10,4 +10,10 @@ modules_install:
 clean:
 	$(MAKE) -C $(KDIR) M=$(PWD) clean
 
-.PHONY: modules modules_install clean
+test:
+	gcc shnet_test.c -o shnet_test
+
+clean_test:
+	rm -f shnet_test
+
+.PHONY: modules modules_install clean clean_test
