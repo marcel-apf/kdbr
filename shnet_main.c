@@ -94,7 +94,6 @@ static int shnet_port_release(struct inode *inode, struct file *filp)
 
     device_destroy(shnet_data.class , dev);
     cdev_del(&port->cdev);
-    unregister_chrdev_region(dev, 1);
 
     kfree(port);
     pr_info("shnet port %d closed\n", port->id);
