@@ -74,6 +74,17 @@ static int shnet_port_open(struct inode *inode, struct file *filp)
     port = container_of(inode->i_cdev, struct shnet_port, cdev);
     filp->private_data = port;
 
+    if (!port) {
+        pr_err("shnet: port open - no port data\n");
+        return -1;
+    }
+
+    if (port->id <= 0) {
+        pr_err("shnet: port open - bad port id %d\n", port->id);
+        return -1;
+    }
+
+    pr_err("shnet: port opened with id %d\n", port->id);
     return 0;
 }
 
@@ -87,16 +98,21 @@ static int shnet_port_release(struct inode *inode, struct file *filp)
         pr_err("shnet: no port data\n");
         return 0;
     }
-    pr_info("Closing shnet port %d\n", port->id);
+    if (port->id <= 0) {
+        pr_err("shnet: port release - bad port id %d\n", port->id);
+        return -1;
+    }
+
+    pr_err("Closing shnet port %d\n", port->id);
     dev = MKDEV(shnet_data.major, port->id);
 
     shnet_unregister_device(port);
 
-    device_destroy(shnet_data.class , dev);
+    device_destroy(shnet_data.class, dev);
     cdev_del(&port->cdev);
 
     kfree(port);
-    pr_info("shnet port %d closed\n", port->id);
+    pr_err("shnet port %d closed\n", port->id);
     return 0;
 }
 
@@ -127,6 +143,7 @@ static int shnet_register_device(void)
         ret = -ENOSPC;
         goto fail_port;
     }
+    pr_err("xxxxxx  First zero bit %d\n", id);
     set_bit(id, shnet_data.port_map);
     port->id = id;
     list_add_tail(&port->list, &shnet_data.ports);
@@ -225,9 +242,9 @@ static int __init shnet_init(void)
         ret = PTR_ERR(shnet_data.class);
         pr_err("Error %d creating shnet-class\n", ret);
         goto fail_cdev;
-}
+    }
 
-shnet_data.dev = device_create(shnet_data.class, NULL,
+    shnet_data.dev = device_create(shnet_data.class, NULL,
                                MKDEV(shnet_data.major, 0), NULL, "shnet");
     if (IS_ERR(shnet_data.dev)) {
         ret = PTR_ERR(shnet_data.dev);
