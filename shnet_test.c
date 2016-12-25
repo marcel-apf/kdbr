@@ -12,6 +12,7 @@
 
 #define SHNET_IOC_MAGIC 0xBA
 #define SHNET_REGISTER_DEVICE _IOR(SHNET_IOC_MAGIC, 0, int)
+#define SHNET_UNREGISTER_DEVICE     _IOW(SHNET_IOC_MAGIC, 1, int)
 
 int ioctl_register_device(int shnet_fd)
 {
@@ -27,6 +28,19 @@ int ioctl_register_device(int shnet_fd)
     printf("shnet device registered to port %d\n", port);
 
     return port;
+}
+
+int ioctl_unregister_device(int shnet_fd, int port)
+{
+    int ret;
+
+    printf("shnet unregister device at port %d\n", port);
+    ret = ioctl(shnet_fd, SHNET_UNREGISTER_DEVICE, &port);
+    if (ret == -1) {
+        fprintf(stderr, "SHNET_UNREGISTER_DEVICE failed: %s\n", strerror(ret));
+    }
+
+    return ret;
 }
 
 
@@ -64,6 +78,10 @@ int main(void)
     getchar();  
 
     close(port_fd);
+
+    if (!ioctl_unregister_device(shnet_fd, port)) {
+        printf("shnet device at port %d unregistered\n", port);
+    }
     close(shnet_fd);
     printf("shnet fd and port %d closed\n", port);
     return 0;

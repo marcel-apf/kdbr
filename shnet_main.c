@@ -57,15 +57,6 @@ struct shnet_port {
     int id;
 };
 
-static void shnet_unregister_device(struct shnet_port *port)
-{
-    spin_lock_irq(&shnet_data.lock);
-    list_del(&port->list);
-    clear_bit(port->id, shnet_data.port_map);
-    spin_unlock_irq(&shnet_data.lock);
-
-    pr_info("Unregistered the device on port %d\n", port->id);
-}
 
 static int shnet_port_open(struct inode *inode, struct file *filp)
 {
@@ -84,35 +75,21 @@ static int shnet_port_open(struct inode *inode, struct file *filp)
         return -1;
     }
 
-    pr_err("shnet: port opened with id %d\n", port->id);
+    pr_info("shnet: port opened with id %d\n", port->id);
     return 0;
 }
 
 static int shnet_port_release(struct inode *inode, struct file *filp)
 {
     struct shnet_port *port;
-    dev_t dev;
 
     port = filp->private_data;
     if (!port) {
         pr_err("shnet: no port data\n");
         return 0;
     }
-    if (port->id <= 0) {
-        pr_err("shnet: port release - bad port id %d\n", port->id);
-        return -1;
-    }
 
-    pr_err("Closing shnet port %d\n", port->id);
-    dev = MKDEV(shnet_data.major, port->id);
-
-    shnet_unregister_device(port);
-
-    device_destroy(shnet_data.class, dev);
-    cdev_del(&port->cdev);
-
-    kfree(port);
-    pr_err("shnet port %d closed\n", port->id);
+    pr_info("shnet port %d closed\n", port->id);
     return 0;
 }
 
@@ -122,10 +99,48 @@ static const struct file_operations shnet_port_ops = {
     .release        = shnet_port_release,
 };
 
+static void shnet_delete_port(struct shnet_port *port)
+{
+    spin_lock_irq(&shnet_data.lock);
+
+    list_del(&port->list);
+    clear_bit(port->id, shnet_data.port_map);
+
+    spin_unlock_irq(&shnet_data.lock);
+}
+
+static void shnet_destroy_device(struct shnet_port *port)
+{
+    device_destroy(shnet_data.class, port->cdev.dev);
+    cdev_del(&port->cdev);
+    kfree(port);
+}
+
+static int shnet_unregister_device(int id)
+{
+    struct shnet_port *port = NULL, *port2 = NULL;
+
+    if (id <= 0 || id > SHNET_MAX_PORTS) {
+        pr_err("shnet: unregister device - bad port id %d\n", port->id);
+        return -EINVAL;
+    }
+
+    list_for_each_entry_safe(port, port2, &shnet_data.ports, list) {
+        if (port->id == id) {
+            pr_err("Unregistered the device on port %d\n", port->id);
+            shnet_delete_port(port);
+            shnet_destroy_device(port);
+            return 0;
+        }
+    }
+
+    return -ENODEV;
+}
+
 static int shnet_register_device(void)
 {
     struct shnet_port *port;
-    dev_t dev;
+    dev_t devt;
     int id;
     int ret;
 
@@ -143,7 +158,7 @@ static int shnet_register_device(void)
         ret = -ENOSPC;
         goto fail_port;
     }
-    pr_err("xxxxxx  First zero bit %d\n", id);
+
     set_bit(id, shnet_data.port_map);
     port->id = id;
     list_add_tail(&port->list, &shnet_data.ports);
@@ -152,27 +167,27 @@ static int shnet_register_device(void)
 
     cdev_init(&port->cdev, &shnet_port_ops);
     port->cdev.owner = THIS_MODULE;
-    dev = MKDEV(shnet_data.major, id);
-    ret = cdev_add(&port->cdev, dev, 1);
+    devt = MKDEV(shnet_data.major, id);
+    ret = cdev_add(&port->cdev, devt, 1);
     if (ret < 0) {
         pr_err("Error %d adding cdev for shnet port %d\n", ret, id);
         goto fail_cdev;
     }
 
-    port->dev = device_create(shnet_data.class, shnet_data.dev,
-                              dev, port, "shnet%d", id);
+    port->dev = device_create(shnet_data.class, NULL,
+                              devt, port, "shnet%d", id);
     if (IS_ERR(port->dev)) {
         ret = PTR_ERR(port->dev);
         pr_err("Error %d creating device for shnet port %d\n", ret, id);
         goto fail_cdev;
     }
 
-    pr_info("Registered a new device on port %d\n", port->id);
+    pr_info("Registered a new device on port, %d major %d\n", port->id, shnet_data.major);
     return id;
 
 fail_cdev:
     cdev_del(&port->cdev);
-    shnet_unregister_device(port);
+    shnet_delete_port(port);
 
 fail_port:
     kfree(port);
@@ -184,7 +199,7 @@ fail:
 static long shnet_ioctl(struct file *filp,
                         unsigned int cmd, unsigned long arg)
 {
-    int ret;
+    int ret, port;
 
     pr_info("shnet driver ioctl called\n");
 
@@ -197,6 +212,11 @@ static long shnet_ioctl(struct file *filp,
     switch (cmd) {
     case SHNET_REGISTER_DEVICE:
         ret = put_user(shnet_register_device(), (int __user *)arg);
+        break;
+    case SHNET_UNREGISTER_DEVICE:
+        ret = get_user(port,  (int __user *)arg);
+        if (!ret)
+            ret = shnet_unregister_device(port);
         break;
     default:
         return -ENOTTY;
@@ -219,19 +239,19 @@ static const struct file_operations shnet_ops = {
 
 static int __init shnet_init(void)
 {
-    dev_t dev;
+    dev_t devt;
     int ret;
 
-    ret = alloc_chrdev_region(&dev, 0, SHNET_MAX_PORTS, "shnet");
+    ret = alloc_chrdev_region(&devt, 0, SHNET_MAX_PORTS, "shnet");
     if (ret < 0) {
         pr_err("Error %d allocating chrdev region for shnet\n", ret);
         return ret;
     }
-    shnet_data.major = MAJOR(dev);
+    shnet_data.major = MAJOR(devt);
 
     cdev_init(&shnet_data.cdev, &shnet_ops);
     shnet_data.cdev.owner = THIS_MODULE;
-    ret = cdev_add(&shnet_data.cdev, dev, SHNET_MAX_PORTS);
+    ret = cdev_add(&shnet_data.cdev, devt, 1);
     if (ret < 0) {
         pr_err("Error %d adding cdev for shnet\n", ret);
         goto fail_chrdev;
@@ -245,7 +265,7 @@ static int __init shnet_init(void)
     }
 
     shnet_data.dev = device_create(shnet_data.class, NULL,
-                               MKDEV(shnet_data.major, 0), NULL, "shnet");
+                                   devt, NULL, "shnet");
     if (IS_ERR(shnet_data.dev)) {
         ret = PTR_ERR(shnet_data.dev);
         pr_err("Error %d creating shnet device\n", ret);
@@ -269,7 +289,7 @@ fail_cdev:
     cdev_del(&shnet_data.cdev);
 
 fail_chrdev:
-    unregister_chrdev_region(dev, SHNET_MAX_PORTS);
+    unregister_chrdev_region(devt, SHNET_MAX_PORTS);
     return ret;
 } 
 EXPORT_SYMBOL_GPL(shnet_init);
@@ -278,8 +298,10 @@ static void __exit shnet_exit(void)
 {
     struct shnet_port *port = NULL, *port2 =NULL;
 
-    list_for_each_entry_safe(port, port2, &shnet_data.ports, list)
-        shnet_unregister_device(port);
+    list_for_each_entry_safe(port, port2, &shnet_data.ports, list) {
+        shnet_delete_port(port);
+        shnet_destroy_device(port);
+    }
 
     device_destroy(shnet_data.class , MKDEV(shnet_data.major, 0));
     class_destroy(shnet_data.class);
