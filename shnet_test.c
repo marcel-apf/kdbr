@@ -7,14 +7,11 @@
 #include <string.h>
 #include <termios.h>
 #include <errno.h>
+#include "shnet.h"
 
 #define SHNET_FILE_NAME "/dev/shnet"
 
-#define SHNET_IOC_MAGIC 0xBA
-#define SHNET_REGISTER_DEVICE _IOR(SHNET_IOC_MAGIC, 0, int)
-#define SHNET_UNREGISTER_DEVICE     _IOW(SHNET_IOC_MAGIC, 1, int)
-
-int ioctl_register_device(int shnet_fd)
+static int ioctl_register_device(int shnet_fd)
 {
     int port, ret;
 
@@ -30,7 +27,7 @@ int ioctl_register_device(int shnet_fd)
     return port;
 }
 
-int ioctl_unregister_device(int shnet_fd, int port)
+static int ioctl_unregister_device(int shnet_fd, int port)
 {
     int ret;
 
@@ -43,12 +40,55 @@ int ioctl_unregister_device(int shnet_fd, int port)
     return ret;
 }
 
-
-
-int main(void)
+static int ioctl_send_req(int port_fd, struct shnet_send_req *req)
 {
-    int shnet_fd, port_fd, port, err;
+    int ret;
+
+    ret = ioctl(port_fd, SHNET_PORT_SEND, req);
+    if (ret == -1) {
+        fprintf(stderr, "SHNET_PORT_SEND failed: %s\n", strerror(ret));
+        return ret;
+    }
+
+    printf("shnet request sent\n");
+
+    return 0;
+}
+
+static int ioctl_recv_req(int port_fd, struct shnet_recv_req *req)
+{
+    int ret;
+
+    ret = ioctl(port_fd, SHNET_PORT_RECV, req);
+    if (ret == -1) {
+        fprintf(stderr, "SHNET_PORT_SEND failed: %s\n", strerror(ret));
+        return ret;
+    }
+
+    printf("shnet request received %d\n");
+
+    return 0;
+}
+
+
+int main(int argc, char **argv)
+{
+    int shnet_fd, port_fd, port, err, opt, sender = 0;
     char shnet_port_name[80] = {0};
+    struct shnet_send_req sreq;
+    char buf[20] = {0};
+    char buf1[10] = {0};
+    char buf2[10] = {0};
+
+    while ((opt = getopt (argc, argv, "s")) != -1) {
+        switch (opt) {
+        case 's':
+            sender = 1;
+            break;
+        default:
+            exit(1);
+        }
+    }
 
     shnet_fd = open(SHNET_FILE_NAME, 0);
     if (shnet_fd < 0) {
@@ -74,8 +114,37 @@ int main(void)
         goto fail_shnet_fd;
     }
 
-    printf("Press Any Key to Continue\n");  
-    getchar();  
+    if (sender) {
+        strcpy(buf, "Hello world!!!");
+
+        sreq.vec[0].iov_base = buf;
+        sreq.vec[0].iov_len = 20;
+        sreq.vlen = 1;
+    } else {
+        struct shnet_recv_req rreq;
+
+        rreq.vec[0].iov_base = buf1;
+        rreq.vec[0].iov_len = 10;
+        rreq.vec[1].iov_base = buf2;
+        rreq.vec[1].iov_len = 10;
+        rreq.vlen = 2;
+
+        if (ioctl_recv_req(port_fd, &rreq)) {
+            goto fail_port;
+        }
+    }
+
+    printf("Ready - Press Any Key to Continue\n");
+    getchar();
+
+    if (sender) {
+        if (!ioctl_send_req(port_fd, &sreq)) {
+            printf("Message sent - Press Any Key to Continue\n");
+            getchar();
+        }
+    } else {
+        printf("Message received %s - %s\n", buf1, buf2);
+    }
 
     close(port_fd);
 
@@ -86,6 +155,8 @@ int main(void)
     printf("shnet fd and port %d closed\n", port);
     return 0;
 
+fail_port:
+    close(port_fd);
 
 fail_shnet_fd:
     close(shnet_fd);

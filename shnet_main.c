@@ -20,18 +20,12 @@
 #include <linux/spinlock.h>
 #include <linux/slab.h>
 #include <asm/uaccess.h>
+#include "shnet.h"
+
 
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Marcel Apfelbaum");
 
-
-#define SHNET_MAX_PORTS 255
-
-#define SHNET_IOC_MAGIC 0xBA
-
-#define SHNET_REGISTER_DEVICE       _IOR(SHNET_IOC_MAGIC, 0, int)
-#define SHNET_UNREGISTER_DEVICE     _IOW(SHNET_IOC_MAGIC, 1, int)
-#define SHNET_IOC_MAX               2
 
 struct shnet_driver_data {
     struct class *class;
@@ -46,6 +40,7 @@ struct shnet_driver_data {
 };
 static struct shnet_driver_data shnet_data;
 
+
 struct shnet_port {
     struct cdev cdev;
     struct device *dev;
@@ -55,6 +50,7 @@ struct shnet_port {
 
     /* port id - device minor */
     int id;
+    pid_t pid;
 };
 
 
@@ -93,8 +89,72 @@ static int shnet_port_release(struct inode *inode, struct file *filp)
     return 0;
 }
 
+static void shnet_print_iovec(const struct iovec *vec, int vlen)
+{
+    int i;
+
+    for (i = 0; i < vlen; i++) {
+        pr_info ("addr %p, len %ld", vec[i].iov_base, vec[i].iov_len);
+    }
+    pr_info("\n");
+}
+
+static int shnet_port_recv(struct shnet_port *port,
+                           struct shnet_recv_req *recv_req)
+{
+    pr_info("shnet_port_recv\n");
+    shnet_print_iovec(recv_req->vec, recv_req->vlen);
+    return 0;
+}
+
+static int snhet_port_send(struct shnet_port *port,
+                           struct shnet_send_req *send_req)
+{
+    pr_info("shnet_port_send\n");
+    shnet_print_iovec(send_req->vec, send_req->vlen);
+    return 0;
+}
+
+static long shnet_port_ioctl(struct file *filp,
+                             unsigned int cmd, unsigned long arg)
+{
+    struct shnet_recv_req recv_req;
+    struct shnet_send_req send_req;
+    int ret;
+
+    pr_info("shnet driver ioctl called\n");
+
+    if (_IOC_TYPE(cmd) != SHNET_PORT_IOC_MAGIC)
+        return -ENOTTY;
+
+    if (_IOC_NR(cmd) > SHNET_PORT_IOC_MAX)
+        return -ENOTTY;
+
+    switch (cmd) {
+    case SHNET_PORT_RECV:
+        ret = copy_from_user(&recv_req,
+                             (struct shnet_recv_req __user *)arg,
+                             sizeof(recv_req));
+        if (!ret)
+            ret = shnet_port_recv(filp->private_data, &recv_req);
+        break;
+    case SHNET_PORT_SEND:
+        ret = copy_from_user(&send_req,
+                             (struct shnet_send_req __user *)arg,
+                             sizeof(send_req));
+        if(!ret)
+            ret = snhet_port_send(filp->private_data, &send_req);
+        break;
+    default:
+        return -ENOTTY;
+    }
+
+    return ret;
+}
+
 static const struct file_operations shnet_port_ops = {
     .owner          = THIS_MODULE,
+    .unlocked_ioctl = shnet_port_ioctl,
     .open           = shnet_port_open,
     .release        = shnet_port_release,
 };
@@ -161,6 +221,7 @@ static int shnet_register_device(void)
 
     set_bit(id, shnet_data.port_map);
     port->id = id;
+    port->pid = current->pid;
     list_add_tail(&port->list, &shnet_data.ports);
 
     spin_unlock_irq(&shnet_data.lock);
