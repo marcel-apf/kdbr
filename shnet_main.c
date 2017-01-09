@@ -19,6 +19,7 @@
 #include <linux/cdev.h>
 #include <linux/spinlock.h>
 #include <linux/slab.h>
+#include <linux/syscalls.h>
 #include <asm/uaccess.h>
 #include "shnet.h"
 
@@ -99,27 +100,56 @@ static void shnet_print_iovec(const struct iovec *vec, int vlen)
     pr_info("\n");
 }
 
+struct shnet_recv {
+    struct shnet_recv_req req;
+    pid_t pid;
+};
+
+static struct shnet_send_req send_req;
+static struct shnet_recv recv;
+
 static int shnet_port_recv(struct shnet_port *port,
-                           struct shnet_recv_req *recv_req)
+                           struct shnet_recv *recv)
 {
     pr_info("shnet_port_recv\n");
-    shnet_print_iovec(recv_req->vec, recv_req->vlen);
+
+    if (!recv->req.vlen) {
+        pr_err("Empty request!\n");
+        return -EINVAL;
+    }
+    shnet_print_iovec(recv->req.vec, recv->req.vlen);
+
+    recv->pid = current->pid;
     return 0;
 }
 
 static int snhet_port_send(struct shnet_port *port,
-                           struct shnet_send_req *send_req)
+                           struct shnet_send_req *req)
 {
+    int ret;
+
     pr_info("shnet_port_send\n");
-    shnet_print_iovec(send_req->vec, send_req->vlen);
+    shnet_print_iovec(req->vec, req->vlen);
+
+    if (!req->vlen) {
+        pr_err("Empty request!\n");
+        return -EINVAL;
+    }
+
+    if (!recv.req.vlen) {
+        pr_err("No recv req pending\n");
+        return -EINVAL;
+    }
+    ret = sys_process_vm_writev(recv.pid, req->vec, req->vlen,
+                            recv.req.vec, recv.req.vlen, 0);
+    if (ret == -1)
+        return ret;
     return 0;
 }
 
 static long shnet_port_ioctl(struct file *filp,
                              unsigned int cmd, unsigned long arg)
 {
-    struct shnet_recv_req recv_req;
-    struct shnet_send_req send_req;
     int ret;
 
     pr_info("shnet driver ioctl called\n");
@@ -132,11 +162,11 @@ static long shnet_port_ioctl(struct file *filp,
 
     switch (cmd) {
     case SHNET_PORT_RECV:
-        ret = copy_from_user(&recv_req,
+        ret = copy_from_user(&recv.req,
                              (struct shnet_recv_req __user *)arg,
-                             sizeof(recv_req));
+                             sizeof(recv.req));
         if (!ret)
-            ret = shnet_port_recv(filp->private_data, &recv_req);
+            ret = shnet_port_recv(filp->private_data, &recv);
         break;
     case SHNET_PORT_SEND:
         ret = copy_from_user(&send_req,
