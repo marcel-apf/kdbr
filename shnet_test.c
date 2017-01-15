@@ -9,8 +9,6 @@
 #include <errno.h>
 #include "shnet.h"
 
-#define SHNET_FILE_NAME "/dev/shnet"
-
 static int ioctl_register_device(int shnet_fd)
 {
     int port, ret;
@@ -40,7 +38,7 @@ static int ioctl_unregister_device(int shnet_fd, int port)
     return ret;
 }
 
-static int ioctl_send_req(int port_fd, struct shnet_send_req *req)
+static int ioctl_send_req(int port_fd, struct shnet_req *req)
 {
     int ret;
 
@@ -55,7 +53,7 @@ static int ioctl_send_req(int port_fd, struct shnet_send_req *req)
     return 0;
 }
 
-static int ioctl_recv_req(int port_fd, struct shnet_recv_req *req)
+static int ioctl_recv_req(int port_fd, struct shnet_req *req)
 {
     int ret;
 
@@ -75,7 +73,7 @@ int main(int argc, char **argv)
 {
     int shnet_fd, port_fd, port, err, opt, sender = 0;
     char shnet_port_name[80] = {0};
-    struct shnet_send_req sreq;
+    struct shnet_req sreq;
     char buf[20] = {0};
     char buf1[10] = {0};
     char buf2[10] = {0};
@@ -121,7 +119,7 @@ int main(int argc, char **argv)
         sreq.vec[0].iov_len = 20;
         sreq.vlen = 1;
     } else {
-        struct shnet_recv_req rreq;
+        struct shnet_req rreq;
 
         rreq.vec[0].iov_base = buf1;
         rreq.vec[0].iov_len = 10;
