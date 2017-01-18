@@ -59,7 +59,7 @@ struct shnet_completion {
 #define SHNET_PORT_CLOSE_CONN    _IOR(SHNET_PORT_IOC_MAGIC, 1, struct shnet_connection)
 #define SHNET_PORT_RECV          _IOR(SHNET_PORT_IOC_MAGIC, 2, struct shnet_req)
 #define SHNET_PORT_SEND          _IOW(SHNET_PORT_IOC_MAGIC, 3, struct shnet_req)
-#define SHNET_PORT_IOC_MAX 2
+#define SHNET_PORT_IOC_MAX 4
 
 #endif
 
