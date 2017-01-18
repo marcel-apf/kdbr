@@ -1,0 +1,25 @@
+From b4ae2cbd10257107716cc7787e8a428d07dc6121 Mon Sep 17 00:00:00 2001
+From: Marcel Apfelbaum <marcel@redhat.com>
+Date: Wed, 18 Jan 2017 20:16:25 +0200
+Subject: [PATCH] mm: export process_vm_rw
+
+Signed-off-by: Marcel Apfelbaum <marcel@redhat.com>
+---
+ mm/process_vm_access.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/mm/process_vm_access.c b/mm/process_vm_access.c
+index 84d0c7e..ace8ecf 100644
+--- a/mm/process_vm_access.c
++++ b/mm/process_vm_access.c
+@@ -295,6 +295,7 @@ static ssize_t process_vm_rw(pid_t pid,
+ 
+ 	return rc;
+ }
++EXPORT_SYMBOL(process_vm_rw);
+ 
+ SYSCALL_DEFINE6(process_vm_readv, pid_t, pid, const struct iovec __user *, lvec,
+ 		unsigned long, liovcnt, const struct iovec __user *, rvec,
+-- 
+2.5.5
+
