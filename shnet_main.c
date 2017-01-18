@@ -26,6 +26,8 @@
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Marcel Apfelbaum");
 
+#define SHNET_MAX_PORTS 255
+
 
 struct shnet_driver_data {
     struct class *class;
