@@ -215,7 +215,7 @@ static void shnet_destroy_device(struct shnet_port *port)
     kfree(port);
 }
 
-static int shnet_unregister_device(int id)
+static int shnet_unregister_port(int id)
 {
     struct shnet_port *port = NULL, *port2 = NULL;
 
@@ -236,7 +236,7 @@ static int shnet_unregister_device(int id)
     return -ENODEV;
 }
 
-static int shnet_register_device(void)
+static int shnet_register_port(void)
 {
     struct shnet_port *port;
     dev_t devt;
@@ -310,13 +310,13 @@ static long shnet_ioctl(struct file *filp,
         return -ENOTTY;
 
     switch (cmd) {
-    case SHNET_REGISTER_DEVICE:
-        ret = put_user(shnet_register_device(), (int __user *)arg);
+    case SHNET_REGISTER_PORT:
+        ret = put_user(shnet_register_port(), (int __user *)arg);
         break;
-    case SHNET_UNREGISTER_DEVICE:
+    case SHNET_UNREGISTER_PORT:
         ret = get_user(port,  (int __user *)arg);
         if (!ret)
-            ret = shnet_unregister_device(port);
+            ret = shnet_unregister_port(port);
         break;
     default:
         return -ENOTTY;

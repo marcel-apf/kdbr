@@ -14,7 +14,7 @@ static int ioctl_register_device(int shnet_fd)
     int port, ret;
 
     printf("shnet register device\n");
-    ret = ioctl(shnet_fd, SHNET_REGISTER_DEVICE, &port);
+    ret = ioctl(shnet_fd, SHNET_REGISTER_PORT, &port);
     if (ret == -1) {
         fprintf(stderr, "SHNET_REGISTER_DEVICE failed: %s\n", strerror(ret));
         return ret;
@@ -30,7 +30,7 @@ static int ioctl_unregister_device(int shnet_fd, int port)
     int ret;
 
     printf("shnet unregister device at port %d\n", port);
-    ret = ioctl(shnet_fd, SHNET_UNREGISTER_DEVICE, &port);
+    ret = ioctl(shnet_fd, SHNET_UNREGISTER_PORT, &port);
     if (ret == -1) {
         fprintf(stderr, "SHNET_UNREGISTER_DEVICE failed: %s\n", strerror(ret));
     }
