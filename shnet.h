@@ -34,18 +34,17 @@ enum shnet_ack_type {
 };
 
 struct shnet_connection {
-    unsigned long connection_id;
-    unsigned long local_queue_id;
-    unsigned long remote_id;
+    unsigned long queue_id;
+    int remote_id;
     unsigned long remote_queue_id;
     enum shnet_ack_type ack_type;
 };
 
 struct shnet_req {
-    unsigned long req_id;
-    unsigned long connection_id;
     struct iovec vec[SHNET_MAX_IOVEC_LEN];
     int vlen; /* <= SHNET_MAX_IOVEC_LEN */
+    int connection_id;
+    unsigned long req_id;
 };
 
 struct shnet_completion {
@@ -56,7 +55,7 @@ struct shnet_completion {
 #define SHNET_PORT_IOC_MAGIC 0xBB
 
 #define SHNET_PORT_OPEN_CONN     _IOR(SHNET_PORT_IOC_MAGIC, 0, struct shnet_connection)
-#define SHNET_PORT_CLOSE_CONN    _IOR(SHNET_PORT_IOC_MAGIC, 1, struct shnet_connection)
+#define SHNET_PORT_CLOSE_CONN    _IOR(SHNET_PORT_IOC_MAGIC, 1, int)
 #define SHNET_PORT_RECV          _IOR(SHNET_PORT_IOC_MAGIC, 2, struct shnet_req)
 #define SHNET_PORT_SEND          _IOW(SHNET_PORT_IOC_MAGIC, 3, struct shnet_req)
 #define SHNET_PORT_IOC_MAX 4

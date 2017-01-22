@@ -63,25 +63,57 @@ static int ioctl_recv_req(int port_fd, struct shnet_req *req)
         return ret;
     }
 
-    printf("shnet request received %d\n");
+    printf("shnet request received\n");
 
     return 0;
 }
 
+static int ioctl_open_conn(int port_fd, struct shnet_connection *conn)
+{
+    int ret;
+
+    ret = ioctl(port_fd, SHNET_PORT_OPEN_CONN, conn);
+    if (ret == -1) {
+        fprintf(stderr, "SHNET_PORT_OPEN_CONN failed: %s\n", strerror(ret));
+        return ret;
+    }
+
+    printf("shnet opened connection %d\n", ret);
+
+    return ret;
+}
+
+static int ioctl_close_conn(int port_fd, int conn_id)
+{
+    int ret;
+
+    ret = ioctl(port_fd, SHNET_PORT_CLOSE_CONN, conn_id);
+    if (ret == -1) {
+        fprintf(stderr, "SHNET_PORT_CLOSE_CONN failed: %s\n", strerror(ret));
+        return ret;
+    }
+
+    return 0;
+}
 
 int main(int argc, char **argv)
 {
-    int shnet_fd, port_fd, port, err, opt, sender = 0;
+    int shnet_fd, port_fd, port, err, opt, r_id, conn_id, sender = 0;
     char shnet_port_name[80] = {0};
     struct shnet_req sreq;
+    struct shnet_connection conn = {0};
+    
     char buf[20] = {0};
     char buf1[10] = {0};
     char buf2[10] = {0};
 
-    while ((opt = getopt (argc, argv, "s")) != -1) {
+    while ((opt = getopt (argc, argv, "sr:")) != -1) {
         switch (opt) {
         case 's':
             sender = 1;
+            break;
+        case 'r':
+            r_id = atoi(optarg);
             break;
         default:
             exit(1);
@@ -102,7 +134,7 @@ int main(int argc, char **argv)
         goto fail_shnet_fd;
     }
 
-    printf("Opening port %d\n", port);
+    printf("Opening port %d, pid %d\n", port, getpid());
 
     sprintf(shnet_port_name, SHNET_FILE_NAME "%d", port);
     port_fd = open(shnet_port_name, 0);
@@ -110,6 +142,11 @@ int main(int argc, char **argv)
         err = port_fd;
         printf("Can't open port file: %s%d, error %d\n", SHNET_FILE_NAME, port, errno);
         goto fail_shnet_fd;
+    }
+
+    conn_id = ioctl_open_conn(port_fd, &conn);
+    if (conn_id < 0) {
+        goto fail_port;
     }
 
     if (sender) {
@@ -128,7 +165,7 @@ int main(int argc, char **argv)
         rreq.vlen = 2;
 
         if (ioctl_recv_req(port_fd, &rreq)) {
-            goto fail_port;
+            goto fail_conn;
         }
     }
 
@@ -144,6 +181,7 @@ int main(int argc, char **argv)
         printf("Message received %s - %s\n", buf1, buf2);
     }
 
+    ioctl_close_conn(port_fd, conn_id);
     close(port_fd);
 
     if (!ioctl_unregister_device(shnet_fd, port)) {
@@ -152,6 +190,9 @@ int main(int argc, char **argv)
     close(shnet_fd);
     printf("shnet fd and port %d closed\n", port);
     return 0;
+
+fail_conn:
+    ioctl_close_conn(port_fd, conn_id);
 
 fail_port:
     close(port_fd);

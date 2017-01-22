@@ -20,6 +20,8 @@
 #include <linux/spinlock.h>
 #include <linux/slab.h>
 #include <linux/syscalls.h>
+#include <linux/mutex.h>
+#include <linux/idr.h>
 #include <asm/uaccess.h>
 #include "shnet.h"
 
@@ -56,6 +58,10 @@ struct shnet_port {
 
     /* Next port in the list, head is in the shnet_data */
     struct list_head list;
+
+    /* connection ids map */
+    struct idr conn_idr;
+    struct mutex conn_mutex;
 
     /* port id - device minor */
     int id;
@@ -110,6 +116,7 @@ static void shnet_print_iovec(const struct iovec *vec, int vlen)
 
 struct shnet_recv {
     struct shnet_req req;
+    const struct iovec __user *vec;
     pid_t pid;
 };
 
@@ -117,7 +124,8 @@ static struct shnet_req send_req;
 static struct shnet_recv recv;
 
 static int shnet_port_recv(struct shnet_port *port,
-                           struct shnet_recv *recv)
+                           struct shnet_recv *recv,
+                           const struct iovec __user *vec)
 {
     pr_info("shnet_port_recv\n");
 
@@ -128,11 +136,13 @@ static int shnet_port_recv(struct shnet_port *port,
     shnet_print_iovec(recv->req.vec, recv->req.vlen);
 
     recv->pid = current->pid;
+    recv->vec = vec;
     return 0;
 }
 
 static int snhet_port_send(struct shnet_port *port,
-                           struct shnet_req *req)
+                           struct shnet_req *req,
+                           const struct iovec __user *vec)
 {
     ssize_t ret;
 
@@ -149,17 +159,82 @@ static int snhet_port_send(struct shnet_port *port,
         return -EINVAL;
     }
 
-    ret = process_vm_rw(recv.pid, req->vec, req->vlen,
-                        recv.req.vec, recv.req.vlen, 0, 1);
-    pr_info("shnet: sent %lu bytes\n", ret);
+    ret = process_vm_rw(recv.pid, vec, req->vlen,
+                        recv.vec, recv.req.vlen, 0, 1);
+    pr_info("shnet: sent %lu(%ld) bytes to pid %d, copied %u vecs into %u vecs\n",
+            ret, (unsigned long)ret, recv.pid, req->vlen, recv.req.vlen);
+
+    shnet_print_iovec(recv.req.vec, recv.req.vlen);
 
     return 0;
+}
+
+static int shnet_open_connection(struct shnet_port *port,
+                                 struct shnet_connection *user_conn)
+{
+    int id, ret;
+    struct shnet_connection *conn;
+
+    conn = kzalloc(sizeof(*conn), GFP_KERNEL);
+    if (conn == NULL)
+        return -ENOMEM;
+    memcpy(conn, user_conn, sizeof(*conn));
+
+    idr_preload(GFP_KERNEL);
+    mutex_lock(&port->conn_mutex);
+
+    id = idr_alloc(&port->conn_idr, conn, 1, 0, GFP_KERNEL);
+
+    mutex_unlock(&port->conn_mutex);
+    idr_preload_end();
+    if (id  <  0) {
+        ret = id;
+        goto err_conn;
+    }
+
+    pr_info("shnet open conn %d, r_id =%d, on port %d\n",
+            id, conn->remote_id, port->id);
+
+    return id;
+err_conn:
+    kfree(conn);
+
+    return ret;
+}
+
+static int shnet_close_connection(struct shnet_port *port, int conn_id)
+{
+    struct shnet_connection *conn;
+    int ret;
+
+    mutex_lock(&port->conn_mutex);
+    conn = idr_find(&port->conn_idr, conn_id);
+    if (conn == NULL) {
+        ret = -ENODEV;
+        pr_err("shnet close connection, can't find id %d\n", conn_id);
+        goto err;
+    }
+
+    idr_remove(&port->conn_idr, conn_id);
+    kfree(conn);
+
+    mutex_unlock(&port->conn_mutex);
+
+    pr_info("shnet close  conn %d, r_id =%d, on port %d\n",
+            conn_id, conn->remote_id, port->id);
+
+    return 0;
+
+err:
+    mutex_unlock(&port->conn_mutex);
+    return ret;
 }
 
 static long shnet_port_ioctl(struct file *filp,
                              unsigned int cmd, unsigned long arg)
 {
-    int ret;
+    int ret, conn_id;
+    struct shnet_connection conn;
 
     pr_info("shnet driver ioctl called\n");
 
@@ -170,19 +245,33 @@ static long shnet_port_ioctl(struct file *filp,
         return -ENOTTY;
 
     switch (cmd) {
+    case SHNET_PORT_OPEN_CONN:
+        ret = copy_from_user(&conn,
+                             (struct shnet_connection __user *)arg,
+                             sizeof(conn));
+        if (!ret)
+            ret = shnet_open_connection(filp->private_data, &conn);
+        break;
+    case SHNET_PORT_CLOSE_CONN:
+        ret = get_user(conn_id,  (int __user *)arg);
+        if (!ret)
+            ret = shnet_close_connection(filp->private_data, conn_id);
+        break;
     case SHNET_PORT_RECV:
         ret = copy_from_user(&recv.req,
                              (struct shnet_req __user *)arg,
                              sizeof(recv.req));
         if (!ret)
-            ret = shnet_port_recv(filp->private_data, &recv);
+            ret = shnet_port_recv(filp->private_data, &recv,
+                                  (const struct iovec __user *)arg);
         break;
     case SHNET_PORT_SEND:
         ret = copy_from_user(&send_req,
                              (struct shnet_req __user *)arg,
                              sizeof(send_req));
         if(!ret)
-            ret = snhet_port_send(filp->private_data, &send_req);
+            ret = snhet_port_send(filp->private_data, &send_req,
+                                  (const struct iovec __user *)arg);
         break;
     default:
         return -ENOTTY;
@@ -198,6 +287,15 @@ static const struct file_operations shnet_port_ops = {
     .release        = shnet_port_release,
 };
 
+static int shnet_conn_idr_cleanup(int id, void *p, void *data)
+{
+    struct shnet_connection *conn = p;
+
+    kfree(conn);
+
+    return 0;
+}
+
 static void shnet_delete_port(struct shnet_port *port)
 {
     spin_lock_irq(&shnet_data.lock);
@@ -206,6 +304,9 @@ static void shnet_delete_port(struct shnet_port *port)
     clear_bit(port->id, shnet_data.port_map);
 
     spin_unlock_irq(&shnet_data.lock);
+
+    idr_for_each(&port->conn_idr, shnet_conn_idr_cleanup, NULL);
+    idr_destroy(&port->conn_idr);
 }
 
 static void shnet_destroy_device(struct shnet_port *port)
@@ -264,6 +365,9 @@ static int shnet_register_port(void)
     list_add_tail(&port->list, &shnet_data.ports);
 
     spin_unlock_irq(&shnet_data.lock);
+
+    mutex_init(&port->conn_mutex);
+    idr_init(&port->conn_idr);
 
     cdev_init(&port->cdev, &shnet_port_ops);
     port->cdev.owner = THIS_MODULE;
