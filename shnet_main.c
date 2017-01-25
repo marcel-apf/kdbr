@@ -194,7 +194,7 @@ static int shnet_open_connection(struct shnet_port *port,
     }
 
     pr_info("shnet open conn %d, r_id =%d, on port %d\n",
-            id, conn->remote_id, port->id);
+            id, conn->peer.remote_id, port->id);
 
     return id;
 err_conn:
@@ -222,7 +222,7 @@ static int shnet_close_connection(struct shnet_port *port, int conn_id)
     mutex_unlock(&port->conn_mutex);
 
     pr_info("shnet close  conn %d, r_id =%d, on port %d\n",
-            conn_id, conn->remote_id, port->id);
+            conn_id, conn->peer.remote_id, port->id);
 
     return 0;
 

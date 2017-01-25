@@ -34,10 +34,14 @@ enum shnet_ack_type {
     SHNET_ACK_DELAYED,
 };
 
-struct shnet_connection {
-    unsigned long queue_id;
+struct shnet_peer {
     int remote_id;
     unsigned long remote_queue_id;
+};
+
+struct shnet_connection {
+    unsigned long queue_id;
+    struct shnet_peer peer;
     enum shnet_ack_type ack_type;
 };
 
@@ -45,6 +49,7 @@ struct shnet_req {
     struct iovec vec[SHNET_MAX_IOVEC_LEN];
     int vlen; /* <= SHNET_MAX_IOVEC_LEN */
     int connection_id;
+    struct shnet_peer peer;
     unsigned long req_id;
 };
 
