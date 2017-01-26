@@ -35,7 +35,8 @@ enum shnet_ack_type {
 };
 
 struct shnet_peer {
-    int remote_id;
+    unsigned long remote_net_id;
+    unsigned long remote_id;
     unsigned long remote_queue_id;
 };
 
