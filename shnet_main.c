@@ -147,11 +147,10 @@ static int snhet_port_send(struct shnet_port *port,
 {
     ssize_t ret;
 
-    pr_info("shnet_port_send\n");
+    pr_info("shnet_port_send, remote net id =0x%lx, "
+            "remote id =0x%lx, remote queue = =%ld\n",
+            req->peer.rgid.net_id, req->peer.rgid.id, req->peer.rqueue);
     shnet_print_iovec(req->vec, req->vlen);
-    pr_info("remote_net_id=0x%lx\n", req->peer.remote_net_id);
-    pr_info("remote_id=0x%lx\n", req->peer.remote_id);
-    pr_info("dqpn=%ld\n", req->peer.remote_queue_id);
 
     if (!req->vlen) {
         pr_err("Empty request!\n");
@@ -197,7 +196,7 @@ static int shnet_open_connection(struct shnet_port *port,
     }
 
     pr_info("shnet open conn %d, r_net_id=0x%lx, r_id=0x%lx on port %d\n",
-            id, conn->peer.remote_net_id, conn->peer.remote_id, port->id);
+            id, conn->peer.rgid.net_id, conn->peer.rgid.id, port->id);
 
     return id;
 err_conn:
@@ -225,7 +224,7 @@ static int shnet_close_connection(struct shnet_port *port, int conn_id)
     mutex_unlock(&port->conn_mutex);
 
     pr_info("shnet close conn %d, r_net_id=0x%lx, r_id=0x%lx on port %d\n",
-            conn_id, conn->peer.remote_net_id, conn->peer.remote_id, port->id);
+            conn_id, conn->peer.rgid.net_id, conn->peer.rgid.id, port->id);
 
     return 0;
 

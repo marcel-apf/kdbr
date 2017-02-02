@@ -34,10 +34,14 @@ enum shnet_ack_type {
     SHNET_ACK_DELAYED,
 };
 
+struct shnet_gid {
+    unsigned long net_id;
+    unsigned long id;
+};
+
 struct shnet_peer {
-    unsigned long remote_net_id;
-    unsigned long remote_id;
-    unsigned long remote_queue_id;
+    struct shnet_gid rgid;
+    unsigned long rqueue;
 };
 
 struct shnet_connection {
