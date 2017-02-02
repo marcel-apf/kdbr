@@ -59,6 +59,7 @@ struct shnet_req {
 };
 
 struct shnet_completion {
+    int connection_id;
     unsigned long req_id;
     int status; /* 0 = Success */
 };
