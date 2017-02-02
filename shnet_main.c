@@ -31,13 +31,15 @@ MODULE_AUTHOR("Marcel Apfelbaum");
 
 #define SHNET_MAX_PORTS 255
 
+// #define PROCESS_VM_RW
+#ifdef PROCESS_VM_RW
 extern ssize_t process_vm_rw(pid_t pid,
                              const struct iovec __user *lvec,
                              unsigned long liovcnt,
                              const struct iovec __user *rvec,
                              unsigned long riovcnt,
                              unsigned long flags, int vm_write);
-
+#endif
 
 struct shnet_driver_data {
     struct class *class;
@@ -145,7 +147,7 @@ static int snhet_port_send(struct shnet_port *port,
                            struct shnet_req *req,
                            const struct iovec __user *vec)
 {
-    ssize_t ret;
+    ssize_t ret = 0;
 
     pr_info("shnet_port_send, remote net id =0x%lx, "
             "remote id =0x%lx, remote queue = =%ld\n",
@@ -162,14 +164,16 @@ static int snhet_port_send(struct shnet_port *port,
         return -EINVAL;
     }
 
+#ifdef PROCESS_VM_RW
     ret = process_vm_rw(recv.pid, vec, req->vlen,
                         recv.vec, recv.req.vlen, 0, 1);
+#endif
     pr_info("shnet: sent %lu(%ld) bytes to pid %d, copied %u vecs into %u vecs\n",
             ret, (unsigned long)ret, recv.pid, req->vlen, recv.req.vlen);
 
     shnet_print_iovec(recv.req.vec, recv.req.vlen);
 
-    return 0;
+    return ret;
 }
 
 static int shnet_open_connection(struct shnet_port *port,
