@@ -54,6 +54,17 @@ struct shnet_driver_data {
 };
 static struct shnet_driver_data shnet_data;
 
+struct shnet_completion_elem {
+	struct list_head list;
+	struct shnet_completion comp;
+};
+
+struct comp_ring {
+    /* List of 'completions' for this port */
+    struct list_head list;
+    wait_queue_head_t queue;
+    char data_flag;
+};
 
 struct shnet_port {
     struct cdev cdev;
@@ -69,6 +80,8 @@ struct shnet_port {
     /* port id - device minor */
     int id;
     pid_t pid;
+
+    struct comp_ring comps;
 };
 
 
@@ -143,6 +156,28 @@ static int shnet_port_recv(struct shnet_port *port,
     return 0;
 }
 
+int post_cqe(struct shnet_port *port, int connection_id, unsigned long req_id,
+	     int status)
+{
+    struct shnet_completion_elem *comp_elem;
+
+    comp_elem = kmalloc(sizeof(struct shnet_completion_elem), GFP_KERNEL);
+    if (!comp_elem) {
+	    pr_err("Fail to allocate completion-event\n");
+	    return -EINVAL;
+    }
+    comp_elem->comp.req_id = req_id;
+    comp_elem->comp.status = status;
+    comp_elem->comp.connection_id = connection_id;
+    list_add_tail(&comp_elem->list, &port->comps.list);
+
+    port->comps.data_flag = 1;
+
+    wake_up_interruptible(&port->comps.queue);
+
+    return 0;
+}
+
 static int snhet_port_send(struct shnet_port *port,
                            struct shnet_req *req,
                            const struct iovec __user *vec)
@@ -168,6 +203,9 @@ static int snhet_port_send(struct shnet_port *port,
     ret = process_vm_rw(recv.pid, vec, req->vlen,
                         recv.vec, recv.req.vlen, 0, 1);
 #endif
+
+    post_cqe(port, req->connection_id, req->req_id, ret);
+
     pr_info("shnet: sent %lu(%ld) bytes to pid %d, copied %u vecs into %u vecs\n",
             ret, (unsigned long)ret, recv.pid, req->vlen, recv.req.vlen);
 
@@ -287,11 +325,42 @@ static long shnet_port_ioctl(struct file *filp,
     return ret;
 }
 
+ssize_t shnet_port_read(struct file *file, char __user *buf, size_t size,
+			loff_t *ppos)
+{
+	struct shnet_completion_elem *comp_elem, *next;
+	int rc;
+	size_t sz = 0;
+	struct shnet_port *port = file->private_data;
+
+	wait_event_interruptible(port->comps.queue, port->comps.data_flag);
+	port->comps.data_flag = 0;
+
+	list_for_each_entry_safe(comp_elem, next, &port->comps.list, list) {
+		if (sz + sizeof(struct shnet_completion) > size)
+			return sz;
+
+		rc = copy_to_user(buf + sz, &comp_elem->comp,
+				  sizeof(struct shnet_completion));
+		if (rc < 0) {
+			pr_warn("Fail to copy to user buffer, rc=%d\n", rc);
+			return sz;
+		}
+
+		sz += sizeof(struct shnet_completion);
+		list_del(&comp_elem->list);
+		kfree(comp_elem);
+	}
+
+	return sz;
+}
+
 static const struct file_operations shnet_port_ops = {
     .owner          = THIS_MODULE,
     .unlocked_ioctl = shnet_port_ioctl,
     .open           = shnet_port_open,
     .release        = shnet_port_release,
+    .read	    = shnet_port_read,
 };
 
 static int shnet_conn_idr_cleanup(int id, void *p, void *data)
@@ -370,6 +439,10 @@ static int shnet_register_port(void)
     port->id = id;
     port->pid = current->pid;
     list_add_tail(&port->list, &shnet_data.ports);
+
+    INIT_LIST_HEAD(&port->comps.list);
+    port->comps.data_flag = 0;
+    init_waitqueue_head(&port->comps.queue);
 
     spin_unlock_irq(&shnet_data.lock);
 
