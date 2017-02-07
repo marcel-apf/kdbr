@@ -23,6 +23,7 @@
 #include <linux/syscalls.h>
 #include <linux/mutex.h>
 #include <linux/idr.h>
+#include <linux/highmem.h>
 #include <asm/uaccess.h>
 #include "shnet.h"
 
@@ -134,6 +135,8 @@ struct shnet_recv {
     struct shnet_req req;
     const struct iovec __user *vec;
     pid_t pid;
+    struct page *userpage;
+    void *userptr;
 };
 
 static struct shnet_req send_req;
@@ -143,6 +146,8 @@ static int shnet_port_recv(struct shnet_port *port,
                            struct shnet_recv *recv,
                            const struct iovec __user *vec)
 {
+    int rc;
+
     pr_info("shnet_port_recv\n");
 
     if (!recv->req.vlen) {
@@ -152,7 +157,26 @@ static int shnet_port_recv(struct shnet_port *port,
     shnet_print_iovec(recv->req.vec, recv->req.vlen);
 
     recv->pid = current->pid;
-    recv->vec = vec;
+    recv->vec = recv->req.vec;
+
+    if ((unsigned long)recv->req.vec[0].iov_base & (PAGE_SIZE -1)) {
+        pr_err("Address %p is not aligned\n", recv->req.vec[0].iov_base);
+        return -EINVAL;
+    }
+
+    rc = get_user_pages_fast((unsigned long)recv->req.vec[0].iov_base, 1, 1,
+			     &recv->userpage);
+    if (rc != 1) {
+        pr_err("get_user_pages_fast=%d\n", rc);
+        return -EINVAL;
+    }
+
+    recv->userptr = kmap(recv->userpage);
+    if (recv->userptr == NULL) {
+    	pr_info("kmap = NULL\n");
+        return -EINVAL;
+    }
+
     return 0;
 }
 
@@ -160,6 +184,9 @@ int post_cqe(struct shnet_port *port, int connection_id, unsigned long req_id,
 	     int status)
 {
     struct shnet_completion_elem *comp_elem;
+
+    pr_err("post_cqe: connection_id=%d, req_id=%ld, status=%d\n", connection_id,
+	   req_id, status);
 
     comp_elem = kmalloc(sizeof(struct shnet_completion_elem), GFP_KERNEL);
     if (!comp_elem) {
@@ -204,7 +231,23 @@ static int snhet_port_send(struct shnet_port *port,
                         recv.vec, recv.req.vlen, 0, 1);
 #endif
 
-    post_cqe(port, req->connection_id, req->req_id, ret);
+    if (recv.userptr) {
+	    ret = copy_from_user(recv.userptr, req->vec[0].iov_base,
+				 req->vec[0].iov_len);
+	    ret = req->vec[0].iov_len;
+
+	    SetPageDirty(recv.userpage);
+	    kunmap(recv.userptr);
+            put_page(recv.userpage);
+	    recv.userptr = NULL;
+
+            post_cqe(port, recv.req.connection_id, recv.req.req_id, 0);
+    } else {
+	    pr_info("Send w/o recv\n");
+	    ret = -1;
+    }
+
+    post_cqe(port, req->connection_id, req->req_id, 0);
 
     pr_info("shnet: sent %lu(%ld) bytes to pid %d, copied %u vecs into %u vecs\n",
             ret, (unsigned long)ret, recv.pid, req->vlen, recv.req.vlen);
@@ -334,23 +377,28 @@ ssize_t shnet_port_read(struct file *file, char __user *buf, size_t size,
 	struct shnet_port *port = file->private_data;
 
 	wait_event_interruptible(port->comps.queue, port->comps.data_flag);
-	port->comps.data_flag = 0;
 
 	list_for_each_entry_safe(comp_elem, next, &port->comps.list, list) {
 		if (sz + sizeof(struct shnet_completion) > size)
-			return sz;
+			goto out;
 
+		pr_info("shnet_port_read: req_id=%ld, status=%d\n",
+			comp_elem->comp.req_id, comp_elem->comp.status);
 		rc = copy_to_user(buf + sz, &comp_elem->comp,
 				  sizeof(struct shnet_completion));
 		if (rc < 0) {
 			pr_warn("Fail to copy to user buffer, rc=%d\n", rc);
-			return sz;
+			goto out;
 		}
 
 		sz += sizeof(struct shnet_completion);
 		list_del(&comp_elem->list);
 		kfree(comp_elem);
 	}
+
+out:
+	if (list_empty(&port->comps.list))
+		port->comps.data_flag = 0;
 
 	return sz;
 }
@@ -525,6 +573,8 @@ static int __init shnet_init(void)
 {
     dev_t devt;
     int ret;
+
+    recv.userptr = NULL;
 
     ret = alloc_chrdev_region(&devt, 0, SHNET_MAX_PORTS, "shnet");
     if (ret < 0) {
