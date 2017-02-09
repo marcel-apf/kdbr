@@ -103,9 +103,10 @@ int main(int argc, char **argv)
     struct shnet_req sreq;
     struct shnet_connection conn = {0};
     
-    char buf[20] = {0};
-    char buf1[10] = {0};
-    char buf2[10] = {0};
+    char *buf = aligned_alloc(4096, 20);
+    //char *buf = malloc(20);
+    char *buf1 = aligned_alloc(4096, 10);
+    char *buf2 = aligned_alloc(4096, 10);
 
     while ((opt = getopt (argc, argv, "sr:")) != -1) {
         switch (opt) {
@@ -158,11 +159,16 @@ int main(int argc, char **argv)
     } else {
         struct shnet_req rreq;
 
-        rreq.vec[0].iov_base = buf1;
+        /*
+        rreq.vec[0].iov_base = buf2;
         rreq.vec[0].iov_len = 10;
-        rreq.vec[1].iov_base = buf2;
+        rreq.vec[1].iov_base = buf1;
         rreq.vec[1].iov_len = 10;
         rreq.vlen = 2;
+        */
+        rreq.vec[0].iov_base = buf;
+        rreq.vec[0].iov_len = 20;
+        rreq.vlen = 1;
 
         if (ioctl_recv_req(port_fd, &rreq)) {
             goto fail_conn;
@@ -178,7 +184,9 @@ int main(int argc, char **argv)
             getchar();
         }
     } else {
-        printf("Message received %s - %s\n", buf1, buf2);
+        printf("Message received buf='%s'\n", buf);
+        printf("Message received buf1='%s'\n", buf1);
+        printf("Message received buf2='%s'\n", buf2);
     }
 
     ioctl_close_conn(port_fd, conn_id);
@@ -189,7 +197,8 @@ int main(int argc, char **argv)
     }
     close(shnet_fd);
     printf("shnet fd and port %d closed\n", port);
-    return 0;
+    err = 0;
+    goto out;
 
 fail_conn:
     ioctl_close_conn(port_fd, conn_id);
@@ -201,6 +210,10 @@ fail_shnet_fd:
     close(shnet_fd);
     printf("shnet fd closed\n");
 
+out:
+    free(buf2);
+    free(buf1);
+    free(buf);
     return err;
 
 }
