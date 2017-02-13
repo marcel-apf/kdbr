@@ -23,6 +23,7 @@
 #include <linux/syscalls.h>
 #include <linux/mutex.h>
 #include <linux/idr.h>
+#include <linux/highmem.h>
 #include <asm/uaccess.h>
 #include "shnet.h"
 
@@ -54,6 +55,17 @@ struct shnet_driver_data {
 };
 static struct shnet_driver_data shnet_data;
 
+struct shnet_completion_elem {
+	struct list_head list;
+	struct shnet_completion comp;
+};
+
+struct comp_ring {
+    /* List of 'completions' for this port */
+    struct list_head list;
+    wait_queue_head_t queue;
+    char data_flag;
+};
 
 struct shnet_port {
     struct cdev cdev;
@@ -69,6 +81,8 @@ struct shnet_port {
     /* port id - device minor */
     int id;
     pid_t pid;
+
+    struct comp_ring comps;
 };
 
 
@@ -121,6 +135,9 @@ struct shnet_recv {
     struct shnet_req req;
     const struct iovec __user *vec;
     pid_t pid;
+    struct page *userpage;
+    void *userptr;
+    struct shnet_port *port;
 };
 
 static struct shnet_req send_req;
@@ -130,6 +147,8 @@ static int shnet_port_recv(struct shnet_port *port,
                            struct shnet_recv *recv,
                            const struct iovec __user *vec)
 {
+    int rc;
+
     pr_info("shnet_port_recv\n");
 
     if (!recv->req.vlen) {
@@ -139,7 +158,52 @@ static int shnet_port_recv(struct shnet_port *port,
     shnet_print_iovec(recv->req.vec, recv->req.vlen);
 
     recv->pid = current->pid;
-    recv->vec = vec;
+    recv->vec = recv->req.vec;
+    recv->port = port;
+
+    if ((unsigned long)recv->req.vec[0].iov_base & (PAGE_SIZE -1)) {
+        pr_err("Address %p is not aligned\n", recv->req.vec[0].iov_base);
+        return -EINVAL;
+    }
+
+    rc = get_user_pages_fast((unsigned long)recv->req.vec[0].iov_base, 1, 1,
+			     &recv->userpage);
+    if (rc != 1) {
+        pr_err("get_user_pages_fast=%d\n", rc);
+        return -EINVAL;
+    }
+
+    recv->userptr = kmap(recv->userpage);
+    if (recv->userptr == NULL) {
+    	pr_info("kmap = NULL\n");
+        return -EINVAL;
+    }
+
+    return 0;
+}
+
+int post_cqe(struct shnet_port *port, int connection_id, unsigned long req_id,
+	     int status)
+{
+    struct shnet_completion_elem *comp_elem;
+
+    pr_err("post_cqe: port_id=%d, connection_id=%d, req_id=%ld, status=%d\n",
+           port->id, connection_id, req_id, status);
+
+    comp_elem = kmalloc(sizeof(struct shnet_completion_elem), GFP_KERNEL);
+    if (!comp_elem) {
+	    pr_err("Fail to allocate completion-event\n");
+	    return -EINVAL;
+    }
+    comp_elem->comp.req_id = req_id;
+    comp_elem->comp.status = status;
+    comp_elem->comp.connection_id = connection_id;
+    list_add_tail(&comp_elem->list, &port->comps.list);
+
+    port->comps.data_flag = 1;
+
+    wake_up_interruptible(&port->comps.queue);
+
     return 0;
 }
 
@@ -168,6 +232,23 @@ static int snhet_port_send(struct shnet_port *port,
     ret = process_vm_rw(recv.pid, vec, req->vlen,
                         recv.vec, recv.req.vlen, 0, 1);
 #endif
+
+    if (recv.userptr) {
+	    ret = copy_from_user(recv.userptr, req->vec[0].iov_base,
+				 req->vec[0].iov_len);
+	    SetPageDirty(recv.userpage);
+	    kunmap(recv.userptr);
+            put_page(recv.userpage);
+	    recv.userptr = NULL;
+
+            post_cqe(recv.port, recv.req.connection_id, recv.req.req_id, ret);
+    } else {
+	    pr_info("Send w/o recv\n");
+	    ret = -1;
+    }
+
+    ret = post_cqe(port, req->connection_id, req->req_id, ret);
+
     pr_info("shnet: sent %lu(%ld) bytes to pid %d, copied %u vecs into %u vecs\n",
             ret, (unsigned long)ret, recv.pid, req->vlen, recv.req.vlen);
 
@@ -287,11 +368,47 @@ static long shnet_port_ioctl(struct file *filp,
     return ret;
 }
 
+ssize_t shnet_port_read(struct file *file, char __user *buf, size_t size,
+			loff_t *ppos)
+{
+	struct shnet_completion_elem *comp_elem, *next;
+	int rc;
+	size_t sz = 0;
+	struct shnet_port *port = file->private_data;
+
+	wait_event_interruptible(port->comps.queue, port->comps.data_flag);
+
+	list_for_each_entry_safe(comp_elem, next, &port->comps.list, list) {
+		if (sz + sizeof(struct shnet_completion) > size)
+			goto out;
+
+		pr_info("shnet_port_read: req_id=%ld, status=%d\n",
+			comp_elem->comp.req_id, comp_elem->comp.status);
+		rc = copy_to_user(buf + sz, &comp_elem->comp,
+				  sizeof(struct shnet_completion));
+		if (rc < 0) {
+			pr_warn("Fail to copy to user buffer, rc=%d\n", rc);
+			goto out;
+		}
+
+		sz += sizeof(struct shnet_completion);
+		list_del(&comp_elem->list);
+		kfree(comp_elem);
+	}
+
+out:
+	if (list_empty(&port->comps.list))
+		port->comps.data_flag = 0;
+
+	return sz;
+}
+
 static const struct file_operations shnet_port_ops = {
     .owner          = THIS_MODULE,
     .unlocked_ioctl = shnet_port_ioctl,
     .open           = shnet_port_open,
     .release        = shnet_port_release,
+    .read	    = shnet_port_read,
 };
 
 static int shnet_conn_idr_cleanup(int id, void *p, void *data)
@@ -370,6 +487,10 @@ static int shnet_register_port(void)
     port->id = id;
     port->pid = current->pid;
     list_add_tail(&port->list, &shnet_data.ports);
+
+    INIT_LIST_HEAD(&port->comps.list);
+    port->comps.data_flag = 0;
+    init_waitqueue_head(&port->comps.queue);
 
     spin_unlock_irq(&shnet_data.lock);
 
@@ -452,6 +573,8 @@ static int __init shnet_init(void)
 {
     dev_t devt;
     int ret;
+
+    recv.userptr = NULL;
 
     ret = alloc_chrdev_region(&devt, 0, SHNET_MAX_PORTS, "shnet");
     if (ret < 0) {
