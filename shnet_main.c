@@ -137,6 +137,7 @@ struct shnet_recv {
     pid_t pid;
     struct page *userpage;
     void *userptr;
+    struct shnet_port *port;
 };
 
 static struct shnet_req send_req;
@@ -158,6 +159,7 @@ static int shnet_port_recv(struct shnet_port *port,
 
     recv->pid = current->pid;
     recv->vec = recv->req.vec;
+    recv->port = port;
 
     if ((unsigned long)recv->req.vec[0].iov_base & (PAGE_SIZE -1)) {
         pr_err("Address %p is not aligned\n", recv->req.vec[0].iov_base);
@@ -185,8 +187,8 @@ int post_cqe(struct shnet_port *port, int connection_id, unsigned long req_id,
 {
     struct shnet_completion_elem *comp_elem;
 
-    pr_err("post_cqe: connection_id=%d, req_id=%ld, status=%d\n", connection_id,
-	   req_id, status);
+    pr_err("post_cqe: port_id=%d, connection_id=%d, req_id=%ld, status=%d\n",
+           port->id, connection_id, req_id, status);
 
     comp_elem = kmalloc(sizeof(struct shnet_completion_elem), GFP_KERNEL);
     if (!comp_elem) {
@@ -234,20 +236,18 @@ static int snhet_port_send(struct shnet_port *port,
     if (recv.userptr) {
 	    ret = copy_from_user(recv.userptr, req->vec[0].iov_base,
 				 req->vec[0].iov_len);
-	    ret = req->vec[0].iov_len;
-
 	    SetPageDirty(recv.userpage);
 	    kunmap(recv.userptr);
             put_page(recv.userpage);
 	    recv.userptr = NULL;
 
-            post_cqe(port, recv.req.connection_id, recv.req.req_id, 0);
+            post_cqe(recv.port, recv.req.connection_id, recv.req.req_id, ret);
     } else {
 	    pr_info("Send w/o recv\n");
 	    ret = -1;
     }
 
-    post_cqe(port, req->connection_id, req->req_id, 0);
+    ret = post_cqe(port, req->connection_id, req->req_id, ret);
 
     pr_info("shnet: sent %lu(%ld) bytes to pid %d, copied %u vecs into %u vecs\n",
             ret, (unsigned long)ret, recv.pid, req->vlen, recv.req.vlen);
