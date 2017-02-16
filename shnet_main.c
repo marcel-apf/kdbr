@@ -63,6 +63,7 @@ struct shnet_completion_elem {
 struct comp_ring {
     /* List of 'completions' for this port */
     struct list_head list;
+    struct mutex lock;
     wait_queue_head_t queue;
     char data_flag;
 };
@@ -159,7 +160,9 @@ int post_cqe(struct shnet_port *port, int connection_id, unsigned long req_id,
     comp_elem->comp.req_id = req_id;
     comp_elem->comp.status = status;
     comp_elem->comp.connection_id = connection_id;
+    mutex_lock(&port->comps.lock);
     list_add_tail(&comp_elem->list, &port->comps.list);
+    mutex_unlock(&port->comps.lock);
 
     port->comps.data_flag = 1;
 
@@ -387,6 +390,7 @@ ssize_t shnet_port_read(struct file *file, char __user *buf, size_t size,
 
 	wait_event_interruptible(port->comps.queue, port->comps.data_flag);
 
+    	mutex_lock(&port->comps.lock);
 	list_for_each_entry_safe(comp_elem, next, &port->comps.list, list) {
 		if (sz + sizeof(struct shnet_completion) > size)
 			goto out;
@@ -408,6 +412,7 @@ ssize_t shnet_port_read(struct file *file, char __user *buf, size_t size,
 out:
 	if (list_empty(&port->comps.list))
 		port->comps.data_flag = 0;
+    	mutex_unlock(&port->comps.lock);
 
 	return sz;
 }
@@ -498,6 +503,7 @@ static int shnet_register_port(void)
     list_add_tail(&port->list, &shnet_data.ports);
 
     INIT_LIST_HEAD(&port->comps.list);
+    mutex_init(&port->comps.lock);
     port->comps.data_flag = 0;
     init_waitqueue_head(&port->comps.queue);
 
