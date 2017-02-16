@@ -143,45 +143,6 @@ struct shnet_recv {
 static struct shnet_req send_req;
 static struct shnet_recv recv;
 
-static int shnet_port_recv(struct shnet_port *port,
-                           struct shnet_recv *recv,
-                           const struct iovec __user *vec)
-{
-    int rc;
-
-    pr_info("shnet_port_recv\n");
-
-    if (!recv->req.vlen) {
-        pr_err("Empty request!\n");
-        return -EINVAL;
-    }
-    shnet_print_iovec(recv->req.vec, recv->req.vlen);
-
-    recv->pid = current->pid;
-    recv->vec = recv->req.vec;
-    recv->port = port;
-
-    if ((unsigned long)recv->req.vec[0].iov_base & (PAGE_SIZE -1)) {
-        pr_err("Address %p is not aligned\n", recv->req.vec[0].iov_base);
-        return -EINVAL;
-    }
-
-    rc = get_user_pages_fast((unsigned long)recv->req.vec[0].iov_base, 1, 1,
-			     &recv->userpage);
-    if (rc != 1) {
-        pr_err("get_user_pages_fast=%d\n", rc);
-        return -EINVAL;
-    }
-
-    recv->userptr = kmap(recv->userpage);
-    if (recv->userptr == NULL) {
-    	pr_info("kmap = NULL\n");
-        return -EINVAL;
-    }
-
-    return 0;
-}
-
 int post_cqe(struct shnet_port *port, int connection_id, unsigned long req_id,
 	     int status)
 {
@@ -207,6 +168,49 @@ int post_cqe(struct shnet_port *port, int connection_id, unsigned long req_id,
     return 0;
 }
 
+static int shnet_port_recv(struct shnet_port *port,
+                           struct shnet_recv *recv,
+                           const struct iovec __user *vec)
+{
+    int rc;
+
+    pr_info("shnet_port_recv\n");
+
+    if (!recv->req.vlen) {
+        pr_err("Empty request!\n");
+    	return post_cqe(port, recv->req.connection_id, recv->req.req_id,
+			SHNET_ERR_CODE_EMPTY_VEC);
+    }
+    shnet_print_iovec(recv->req.vec, recv->req.vlen);
+
+    recv->pid = current->pid;
+    recv->vec = recv->req.vec;
+    recv->port = port;
+
+    if ((unsigned long)recv->req.vec[0].iov_base & (PAGE_SIZE -1)) {
+        pr_err("Address %p is not aligned\n", recv->req.vec[0].iov_base);
+    	return post_cqe(port, recv->req.connection_id, recv->req.req_id,
+			SHNET_ERR_CODE_INV_ADDR);
+    }
+
+    rc = get_user_pages_fast((unsigned long)recv->req.vec[0].iov_base, 1, 1,
+			     &recv->userpage);
+    if (rc != 1) {
+        pr_err("get_user_pages_fast=%d\n", rc);
+    	return post_cqe(port, recv->req.connection_id, recv->req.req_id,
+			SHNET_ERR_CODE_INV_ADDR);
+    }
+
+    recv->userptr = kmap(recv->userpage);
+    if (recv->userptr == NULL) {
+    	pr_info("kmap = NULL\n");
+    	return post_cqe(port, recv->req.connection_id, recv->req.req_id,
+			SHNET_ERR_CODE_INV_ADDR);
+    }
+
+    return 0;
+}
+
 static int snhet_port_send(struct shnet_port *port,
                            struct shnet_req *req,
                            const struct iovec __user *vec)
@@ -220,12 +224,14 @@ static int snhet_port_send(struct shnet_port *port,
 
     if (!req->vlen) {
         pr_err("Empty request!\n");
-        return -EINVAL;
+    	return post_cqe(port, req->connection_id, req->req_id,
+			SHNET_ERR_CODE_EMPTY_VEC);
     }
 
     if (!recv.req.vlen) {
         pr_err("No recv req pending\n");
-        return -EINVAL;
+    	return post_cqe(port, req->connection_id, req->req_id,
+			SHNET_ERR_CODE_NO_MORE_RECV_BUF);
     }
 
 #ifdef PROCESS_VM_RW
@@ -236,6 +242,9 @@ static int snhet_port_send(struct shnet_port *port,
     if (recv.userptr) {
 	    ret = copy_from_user(recv.userptr, req->vec[0].iov_base,
 				 req->vec[0].iov_len);
+	    if (ret != 0)
+		    ret = SHNET_ERR_CODE_RECV_BUF_PROT;
+
 	    SetPageDirty(recv.userpage);
 	    kunmap(recv.userptr);
             put_page(recv.userpage);
@@ -243,8 +252,8 @@ static int snhet_port_send(struct shnet_port *port,
 
             post_cqe(recv.port, recv.req.connection_id, recv.req.req_id, ret);
     } else {
-	    pr_info("Send w/o recv\n");
-	    ret = -1;
+	    pr_err("Send w/o recv\n");
+	    ret = SHNET_ERR_CODE_NO_MORE_RECV_BUF;
     }
 
     ret = post_cqe(port, req->connection_id, req->req_id, ret);
