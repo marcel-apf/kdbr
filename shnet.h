@@ -28,7 +28,6 @@
 
 #define SHNET_MAX_IOVEC_LEN        UIO_FASTIOV
 
-
 enum shnet_ack_type {
     SHNET_ACK_IMMEDIATE,
     SHNET_ACK_DELAYED,
@@ -57,6 +56,11 @@ struct shnet_req {
     struct shnet_peer peer;
     unsigned long req_id;
 };
+
+#define SHNET_ERR_CODE_EMPTY_VEC	-1
+#define SHNET_ERR_CODE_NO_MORE_RECV_BUF	-2
+#define SHNET_ERR_CODE_RECV_BUF_PROT	-3
+#define SHNET_ERR_CODE_INV_ADDR		-4
 
 struct shnet_completion {
     int connection_id;
