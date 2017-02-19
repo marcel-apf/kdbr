@@ -15,7 +15,13 @@
  *
  */
 
+#ifdef __KERNEL__
 #include <linux/uio.h>
+#define SHNET_MAX_IOVEC_LEN        UIO_FASTIOV
+#else
+#include <sys/uio.h>
+#define SHNET_MAX_IOVEC_LEN        8
+#endif
 
 #define SHNET_FILE_NAME "/dev/shnet"
 #define SHNET_MAX_PORTS 255
@@ -26,7 +32,6 @@
 #define SHNET_UNREGISTER_PORT     _IOW(SHNET_IOC_MAGIC, 1, int)
 #define SHNET_IOC_MAX               2
 
-#define SHNET_MAX_IOVEC_LEN        UIO_FASTIOV
 
 enum shnet_ack_type {
     SHNET_ACK_IMMEDIATE,
