@@ -176,6 +176,8 @@ static int shnet_port_recv(struct shnet_port *port,
                            const struct iovec __user *vec)
 {
     int rc;
+    int nr_pages;
+    int pg_offs;
 
     pr_info("shnet_port_recv\n");
 
@@ -190,21 +192,22 @@ static int shnet_port_recv(struct shnet_port *port,
     recv->vec = recv->req.vec;
     recv->port = port;
 
-    if ((unsigned long)recv->req.vec[0].iov_base & (PAGE_SIZE -1)) {
-        pr_err("Address %p is not aligned\n", recv->req.vec[0].iov_base);
+    nr_pages = (recv->req.vec[0].iov_len + PAGE_SIZE -1) >> PAGE_SHIFT;
+    pg_offs = (unsigned long)recv->req.vec[0].iov_base & (PAGE_SIZE - 1);
+    if (pg_offs) {
+        pr_info("Address %p is not aligned\n", recv->req.vec[0].iov_base);
+	nr_pages++;
+    }
+
+    rc = get_user_pages_fast((unsigned long)recv->req.vec[0].iov_base - pg_offs,
+			     nr_pages, 1, &recv->userpage);
+    if (rc != nr_pages) {
+        pr_err("get_user_pages_fast, requested %d, got %d\n", nr_pages, rc);
     	return post_cqe(port, recv->req.connection_id, recv->req.req_id,
 			SHNET_ERR_CODE_INV_ADDR);
     }
 
-    rc = get_user_pages_fast((unsigned long)recv->req.vec[0].iov_base, 1, 1,
-			     &recv->userpage);
-    if (rc != 1) {
-        pr_err("get_user_pages_fast=%d\n", rc);
-    	return post_cqe(port, recv->req.connection_id, recv->req.req_id,
-			SHNET_ERR_CODE_INV_ADDR);
-    }
-
-    recv->userptr = kmap(recv->userpage);
+    recv->userptr = kmap(recv->userpage) + pg_offs;
     if (recv->userptr == NULL) {
     	pr_info("kmap = NULL\n");
     	return post_cqe(port, recv->req.connection_id, recv->req.req_id,

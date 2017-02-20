@@ -103,10 +103,9 @@ int main(int argc, char **argv)
     struct shnet_req sreq;
     struct shnet_connection conn = {0};
     
-    char *buf = aligned_alloc(4096, 20);
-    //char *buf = malloc(20);
-    char *buf1 = aligned_alloc(4096, 10);
-    char *buf2 = aligned_alloc(4096, 10);
+    char *buf = malloc(20);
+    char *buf1 = malloc(10);
+    char *buf2 = malloc(10);
 
     while ((opt = getopt (argc, argv, "sr:")) != -1) {
         switch (opt) {
