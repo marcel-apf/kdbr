@@ -416,9 +416,7 @@ static const struct file_operations shnet_port_ops = {
 
 static int shnet_conn_idr_cleanup(int id, void *p, void *data)
 {
-	struct shnet_connection *conn = p;
-
-	kfree(conn);
+	kfree((struct shnet_connection *)p);
 
 	return 0;
 }
