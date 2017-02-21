@@ -32,16 +32,6 @@ MODULE_AUTHOR("Marcel Apfelbaum");
 
 #define SHNET_MAX_PORTS 255
 
-// #define PROCESS_VM_RW
-#ifdef PROCESS_VM_RW
-extern ssize_t process_vm_rw(pid_t pid,
-const struct iovec __user *lvec,
-unsigned long liovcnt,
-const struct iovec __user *rvec,
-unsigned long riovcnt,
-unsigned long flags, int vm_write);
-#endif
-
 struct shnet_driver_data {
 	struct class *class;
 	struct device *dev;
@@ -238,11 +228,6 @@ static int snhet_port_send(struct shnet_port *port, struct shnet_req *req,
 		return post_cqe(port, req->connection_id, req->req_id,
 				SHNET_ERR_CODE_NO_MORE_RECV_BUF);
 	}
-
-#ifdef PROCESS_VM_RW
-	ret = process_vm_rw(recv.pid, vec, req->vlen,
-						recv.vec, recv.req.vlen, 0, 1);
-#endif
 
 	if (recv.userptr) {
 		ret = copy_from_user(recv.userptr, req->vec[0].iov_base,
