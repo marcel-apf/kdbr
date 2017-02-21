@@ -55,7 +55,14 @@ struct shnet_connection {
 	enum shnet_ack_type ack_type;
 };
 
+#define SHNET_REQ_SIGNATURE	0x000000AB
+#define SHNET_REQ_POST_RECV	0x00000100
+#define SHNET_REQ_POST_SEND	0x00000200
+#define SHNET_REQ_POST_MREG	0x00000300
+#define SHNET_REQ_POST_RDMA	0x00000400
+
 struct shnet_req {
+	unsigned int flags; /* 2 bits signature, 4 bits msg_type */
 	struct iovec vec[SHNET_MAX_IOVEC_LEN];
 	int vlen; /* <= SHNET_MAX_IOVEC_LEN */
 	int connection_id;
@@ -79,8 +86,6 @@ struct shnet_completion {
 #define SHNET_PORT_OPEN_CONN	_IOR(SHNET_PORT_IOC_MAGIC, 0, \
 				     struct shnet_connection)
 #define SHNET_PORT_CLOSE_CONN	_IOR(SHNET_PORT_IOC_MAGIC, 1, int)
-#define SHNET_PORT_RECV		_IOR(SHNET_PORT_IOC_MAGIC, 2, struct shnet_req)
-#define SHNET_PORT_SEND		_IOW(SHNET_PORT_IOC_MAGIC, 3, struct shnet_req)
 #define SHNET_PORT_IOC_MAX	4
 
 #endif

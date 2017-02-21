@@ -131,7 +131,6 @@ struct shnet_recv {
 	struct shnet_port *port;
 };
 
-static struct shnet_req send_req;
 static struct shnet_recv recv;
 
 int post_cqe(struct shnet_port *port, int connection_id, unsigned long req_id,
@@ -161,7 +160,7 @@ int post_cqe(struct shnet_port *port, int connection_id, unsigned long req_id,
 	return 0;
 }
 
-static int shnet_port_recv(struct shnet_port *port, struct shnet_recv *recv)
+static int shnet_port_recv(struct shnet_port *port, struct shnet_req *req)
 {
 	int rc;
 	int nr_pages;
@@ -169,38 +168,37 @@ static int shnet_port_recv(struct shnet_port *port, struct shnet_recv *recv)
 
 	pr_info("shnet_port_recv\n");
 
-	if (!recv->req.vlen) {
+	if (!req->vlen) {
 		pr_err("Empty request!\n");
-		return post_cqe(port, recv->req.connection_id, recv->req.req_id,
+		return post_cqe(port, req->connection_id, req->req_id,
 				SHNET_ERR_CODE_EMPTY_VEC);
 	}
-	shnet_print_iovec(recv->req.vec, recv->req.vlen);
+	shnet_print_iovec(req->vec, req->vlen);
 
-	recv->pid = current->pid;
-	recv->vec = recv->req.vec;
-	recv->port = port;
+	recv.pid = current->pid;
+	recv.vec = req->vec;
+	recv.port = port;
 
-	nr_pages = (recv->req.vec[0].iov_len + PAGE_SIZE - 1) >> PAGE_SHIFT;
-	pg_offs = (unsigned long)recv->req.vec[0].iov_base & (PAGE_SIZE - 1);
+	nr_pages = (req->vec[0].iov_len + PAGE_SIZE - 1) >> PAGE_SHIFT;
+	pg_offs = (unsigned long)req->vec[0].iov_base & (PAGE_SIZE - 1);
 	if (pg_offs) {
-		pr_info("Address %p is not aligned\n",
-			recv->req.vec[0].iov_base);
+		pr_info("Address %p is not aligned\n", req->vec[0].iov_base);
 		nr_pages++;
 	}
 
-	rc = get_user_pages_fast((unsigned long)recv->req.vec[0].iov_base -
-				 pg_offs, nr_pages, 1, &recv->userpage);
+	rc = get_user_pages_fast((unsigned long)req->vec[0].iov_base -
+				 pg_offs, nr_pages, 1, &recv.userpage);
 	if (rc != nr_pages) {
 		pr_err("get_user_pages_fast, requested %d, got %d\n", nr_pages,
 		       rc);
-		return post_cqe(port, recv->req.connection_id, recv->req.req_id,
+		return post_cqe(port, req->connection_id, req->req_id,
 				SHNET_ERR_CODE_INV_ADDR);
 	}
 
-	recv->userptr = kmap(recv->userpage) + pg_offs;
-	if (recv->userptr == NULL) {
+	recv.userptr = kmap(recv.userpage) + pg_offs;
+	if (recv.userptr == NULL) {
 		pr_err("kmap = NULL\n");
-		return post_cqe(port, recv->req.connection_id, recv->req.req_id,
+		return post_cqe(port, req->connection_id, req->req_id,
 				SHNET_ERR_CODE_INV_ADDR);
 	}
 
@@ -340,18 +338,6 @@ static long shnet_port_ioctl(struct file *filp, unsigned int cmd,
 			ret = shnet_close_connection(filp->private_data,
 						     conn_id);
 		break;
-	case SHNET_PORT_RECV:
-		ret = copy_from_user(&recv.req, (struct shnet_req __user *)arg,
-				     sizeof(recv.req));
-		if (!ret)
-			ret = shnet_port_recv(filp->private_data, &recv);
-		break;
-	case SHNET_PORT_SEND:
-		ret = copy_from_user(&send_req, (struct shnet_req __user *)arg,
-				     sizeof(send_req));
-		if (!ret)
-			ret = snhet_port_send(filp->private_data, &send_req);
-		break;
 	default:
 		return -ENOTTY;
 	}
@@ -396,12 +382,50 @@ out:
 	return sz;
 }
 
+ssize_t shnet_port_write(struct file *file, const char __user *buf, size_t size,
+			 loff_t *ppos)
+{
+	int rc, sz = 0;
+	struct shnet_req req;
+
+	while (1) {
+		if (sz + sizeof(struct shnet_req) > size)
+			goto out;
+
+		rc = copy_from_user(&req,
+				    (struct shnet_req __user *)(buf + sz),
+				    sizeof(req));
+		if (rc) {
+			pr_err("Fail to copy from user buf, pos=%d\n", sz);
+			return sz;
+		}
+
+		if ((req.flags & SHNET_REQ_SIGNATURE) != SHNET_REQ_SIGNATURE) {
+			pr_err("Invalid message signature 0x%x\n",
+			       req.flags & SHNET_REQ_SIGNATURE);
+			return sz;
+		}
+
+		if ((req.flags & SHNET_REQ_POST_RECV) == SHNET_REQ_POST_RECV)
+			rc = shnet_port_recv(file->private_data, &req);
+
+		if ((req.flags & SHNET_REQ_POST_SEND) == SHNET_REQ_POST_SEND)
+			rc = snhet_port_send(file->private_data, &req);
+
+		sz += sizeof(struct shnet_req);
+	}
+
+out:
+	return sz;
+}
+
 static const struct file_operations shnet_port_ops = {
 	.owner		= THIS_MODULE,
 	.unlocked_ioctl	= shnet_port_ioctl,
 	.open		= shnet_port_open,
 	.release	= shnet_port_release,
 	.read		= shnet_port_read,
+	.write		= shnet_port_write,
 };
 
 static int shnet_conn_idr_cleanup(int id, void *p, void *data)
