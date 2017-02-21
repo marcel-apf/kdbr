@@ -221,12 +221,6 @@ static int snhet_port_send(struct shnet_port *port, struct shnet_req *req)
 				SHNET_ERR_CODE_EMPTY_VEC);
 	}
 
-	if (!recv.req.vlen) {
-		pr_err("No recv req pending\n");
-		return post_cqe(port, req->connection_id, req->req_id,
-				SHNET_ERR_CODE_NO_MORE_RECV_BUF);
-	}
-
 	if (recv.userptr) {
 		ret = copy_from_user(recv.userptr, req->vec[0].iov_base,
 				     req->vec[0].iov_len);
