@@ -161,8 +161,7 @@ int post_cqe(struct shnet_port *port, int connection_id, unsigned long req_id,
 	return 0;
 }
 
-static int shnet_port_recv(struct shnet_port *port, struct shnet_recv *recv,
-			   const struct iovec __user *vec)
+static int shnet_port_recv(struct shnet_port *port, struct shnet_recv *recv)
 {
 	int rc;
 	int nr_pages;
@@ -208,8 +207,7 @@ static int shnet_port_recv(struct shnet_port *port, struct shnet_recv *recv,
 	return 0;
 }
 
-static int snhet_port_send(struct shnet_port *port, struct shnet_req *req,
-			   const struct iovec __user *vec)
+static int snhet_port_send(struct shnet_port *port, struct shnet_req *req)
 {
 	ssize_t ret = 0;
 
@@ -352,15 +350,13 @@ static long shnet_port_ioctl(struct file *filp, unsigned int cmd,
 		ret = copy_from_user(&recv.req, (struct shnet_req __user *)arg,
 				     sizeof(recv.req));
 		if (!ret)
-			ret = shnet_port_recv(filp->private_data, &recv,
-					      (const struct iovec __user *)arg);
+			ret = shnet_port_recv(filp->private_data, &recv);
 		break;
 	case SHNET_PORT_SEND:
 		ret = copy_from_user(&send_req, (struct shnet_req __user *)arg,
 				     sizeof(send_req));
 		if (!ret)
-			ret = snhet_port_send(filp->private_data, &send_req,
-					      (const struct iovec __user *)arg);
+			ret = snhet_port_send(filp->private_data, &send_req);
 		break;
 	default:
 		return -ENOTTY;
