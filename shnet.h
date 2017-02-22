@@ -62,7 +62,7 @@ struct shnet_connection {
 #define SHNET_REQ_POST_RDMA	0x00000400
 
 struct shnet_req {
-	unsigned int flags; /* 2 bits signature, 4 bits msg_type */
+	unsigned int flags; /* 8 bits signature, 8 bits msg_type */
 	struct iovec vec[SHNET_MAX_IOVEC_LEN];
 	int vlen; /* <= SHNET_MAX_IOVEC_LEN */
 	int connection_id;

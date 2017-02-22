@@ -357,19 +357,19 @@ ssize_t shnet_port_read(struct file *file, char __user *buf, size_t size,
 
 	mutex_lock(&port->comps.lock);
 	list_for_each_entry_safe(comp_elem, next, &port->comps.list, list) {
-		if (sz + sizeof(struct shnet_completion) > size)
+		if (sz + sizeof(comp_elem->comp) > size)
 			goto out;
 
 		pr_info("shnet_port_read: req_id=%ld, status=%d\n",
 			comp_elem->comp.req_id, comp_elem->comp.status);
 		rc = copy_to_user(buf + sz, &comp_elem->comp,
-				  sizeof(struct shnet_completion));
+				  sizeof(comp_elem->comp));
 		if (rc < 0) {
 			pr_warn("Fail to copy to user buffer, rc=%d\n", rc);
 			goto out;
 		}
 
-		sz += sizeof(struct shnet_completion);
+		sz += sizeof(comp_elem->comp);
 		list_del(&comp_elem->list);
 		kfree(comp_elem);
 	}
@@ -389,7 +389,7 @@ ssize_t shnet_port_write(struct file *file, const char __user *buf, size_t size,
 	struct shnet_req req;
 
 	while (1) {
-		if (sz + sizeof(struct shnet_req) > size)
+		if (sz + sizeof(req) > size)
 			goto out;
 
 		rc = copy_from_user(&req,
@@ -412,7 +412,7 @@ ssize_t shnet_port_write(struct file *file, const char __user *buf, size_t size,
 		if ((req.flags & SHNET_REQ_POST_SEND) == SHNET_REQ_POST_SEND)
 			rc = snhet_port_send(file->private_data, &req);
 
-		sz += sizeof(struct shnet_req);
+		sz += sizeof(req);
 	}
 
 out:
