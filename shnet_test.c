@@ -38,36 +38,6 @@ static int ioctl_unregister_device(int shnet_fd, int port)
     return ret;
 }
 
-static int ioctl_send_req(int port_fd, struct shnet_req *req)
-{
-    int ret;
-
-    ret = ioctl(port_fd, SHNET_PORT_SEND, req);
-    if (ret == -1) {
-        fprintf(stderr, "SHNET_PORT_SEND failed: %s\n", strerror(ret));
-        return ret;
-    }
-
-    printf("shnet request sent\n");
-
-    return 0;
-}
-
-static int ioctl_recv_req(int port_fd, struct shnet_req *req)
-{
-    int ret;
-
-    ret = ioctl(port_fd, SHNET_PORT_RECV, req);
-    if (ret == -1) {
-        fprintf(stderr, "SHNET_PORT_SEND failed: %s\n", strerror(ret));
-        return ret;
-    }
-
-    printf("shnet request received\n");
-
-    return 0;
-}
-
 static int ioctl_open_conn(int port_fd, struct shnet_connection *conn)
 {
     int ret;
@@ -137,7 +107,7 @@ int main(int argc, char **argv)
     printf("Opening port %d, pid %d\n", port, getpid());
 
     sprintf(shnet_port_name, SHNET_FILE_NAME "%d", port);
-    port_fd = open(shnet_port_name, 0);
+    port_fd = open(shnet_port_name, O_RDWR);
     if (port_fd < 0) {
         err = port_fd;
         printf("Can't open port file: %s%d, error %d\n", SHNET_FILE_NAME, port, errno);
@@ -145,9 +115,8 @@ int main(int argc, char **argv)
     }
 
     conn_id = ioctl_open_conn(port_fd, &conn);
-    if (conn_id < 0) {
+    if (conn_id < 0)
         goto fail_port;
-    }
 
     if (sender) {
         strcpy(buf, "Hello world!!!");
@@ -169,19 +138,26 @@ int main(int argc, char **argv)
         rreq.vec[0].iov_len = 20;
         rreq.vlen = 1;
 
-        if (ioctl_recv_req(port_fd, &rreq)) {
-            goto fail_conn;
-        }
+	rreq.flags = SHNET_REQ_SIGNATURE | SHNET_REQ_POST_RECV;
+	err = write(port_fd, &rreq, sizeof(rreq));
+	if (err < 0) {
+		printf("write: err=%d, errno=%d\n", err, errno);
+        	goto fail_conn;
+	}
     }
 
     printf("Ready - Press Any Key to Continue\n");
     getchar();
 
     if (sender) {
-        if (!ioctl_send_req(port_fd, &sreq)) {
-            printf("Message sent - Press Any Key to Continue\n");
-            getchar();
-        }
+	sreq.flags = SHNET_REQ_SIGNATURE | SHNET_REQ_POST_SEND;
+	err = write(port_fd, &sreq, sizeof(sreq));
+	if (err < 0) {
+		printf("write: err=%d, errno=%d\n", err, errno);
+        	goto fail_conn;
+	}
+        printf("Message sent - Press Any Key to Continue\n");
+        getchar();
     } else {
         printf("Message received buf='%s'\n", buf);
         printf("Message received buf1='%s'\n", buf1);
