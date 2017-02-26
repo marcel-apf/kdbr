@@ -29,7 +29,7 @@
 
 #define SHNET_IOC_MAGIC 0xBA
 
-#define SHNET_REGISTER_PORT	_IOR(SHNET_IOC_MAGIC, 0, int)
+#define SHNET_REGISTER_PORT	_IOWR(SHNET_IOC_MAGIC, 0, struct shnet_reg)
 #define SHNET_UNREGISTER_PORT	_IOW(SHNET_IOC_MAGIC, 1, int)
 #define SHNET_IOC_MAX		2
 
@@ -53,6 +53,11 @@ struct shnet_connection {
 	unsigned long queue_id;
 	struct shnet_peer peer;
 	enum shnet_ack_type ack_type;
+};
+
+struct shnet_reg {
+	struct shnet_gid gid; /* in */
+	int port; /* out */
 };
 
 #define SHNET_REQ_SIGNATURE	0x000000AB

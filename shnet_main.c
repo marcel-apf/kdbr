@@ -69,6 +69,9 @@ struct shnet_port {
 	struct idr conn_idr;
 	struct mutex conn_mutex;
 
+	/*port's global id*/
+	struct shnet_gid gid;
+
 	/* port id - device minor */
 	int id;
 	pid_t pid;
@@ -466,7 +469,7 @@ static int shnet_unregister_port(int id)
 
 	list_for_each_entry_safe(port, port2, &shnet_data.ports, list) {
 		if (port->id == id) {
-			pr_err("Unregistering device on port %d\n", port->id);
+			pr_info("Unregistered device on port %d\n", port->id);
 			shnet_delete_port(port);
 			shnet_destroy_device(port);
 			return 0;
@@ -476,7 +479,7 @@ static int shnet_unregister_port(int id)
 	return -ENODEV;
 }
 
-static int shnet_register_port(void)
+static int shnet_register_port(struct shnet_reg *reg)
 {
 	struct shnet_port *port;
 	dev_t devt;
@@ -501,7 +504,11 @@ static int shnet_register_port(void)
 	set_bit(id, shnet_data.port_map);
 	port->id = id;
 	port->pid = current->pid;
+	port->gid.net_id = reg->gid.net_id;
+	port->gid.id = reg->gid.id;
 	list_add_tail(&port->list, &shnet_data.ports);
+
+	reg->port = id;
 
 	INIT_LIST_HEAD(&port->comps.list);
 	mutex_init(&port->comps.lock);
@@ -530,10 +537,11 @@ static int shnet_register_port(void)
 		goto fail_cdev;
 	}
 
-	pr_info("Registered a new device on port, %d major %d\n", port->id,
+	pr_info("Registered device with gid [%lu,%lu] on port %d major %d\n",
+		port->gid.net_id, port->gid.id, port->id,
 		shnet_data.major);
 
-	return id;
+	return 0;
 
 fail_cdev:
 	cdev_del(&port->cdev);
@@ -549,6 +557,7 @@ fail:
 static long shnet_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	int ret, port;
+	struct shnet_reg reg;
 
 	pr_info("shnet driver ioctl called\n");
 
@@ -560,7 +569,16 @@ static long shnet_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 	switch (cmd) {
 	case SHNET_REGISTER_PORT:
-		ret = put_user(shnet_register_port(), (int __user *)arg);
+		ret = copy_from_user(&reg, (struct shnet_reg __user *)arg,
+				     sizeof(reg));
+		if (ret)
+			return -EFAULT;
+
+		ret = shnet_register_port(&reg);
+		if (!ret)
+			ret = copy_to_user((struct shnet_reg __user *)arg,
+					   &reg, sizeof(reg));
+
 		break;
 	case SHNET_UNREGISTER_PORT:
 		ret = get_user(port, (int __user *)arg);

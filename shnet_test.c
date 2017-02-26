@@ -9,20 +9,21 @@
 #include <errno.h>
 #include "shnet.h"
 
-static int ioctl_register_device(int shnet_fd)
+static int ioctl_register_device(int shnet_fd, struct shnet_reg *reg)
 {
-    int port, ret;
+    int ret;
 
     printf("shnet register device\n");
-    ret = ioctl(shnet_fd, SHNET_REGISTER_PORT, &port);
+    ret = ioctl(shnet_fd, SHNET_REGISTER_PORT, reg);
     if (ret == -1) {
         fprintf(stderr, "SHNET_REGISTER_DEVICE failed: %s\n", strerror(ret));
         return ret;
     }
 
-    printf("shnet device registered to port %d\n", port);
+    printf("shnet device with gid %d registered to port %d\n",
+	   reg->gid.id, reg->port);
 
-    return port;
+    return reg->port;
 }
 
 static int ioctl_unregister_device(int shnet_fd, int port)
@@ -57,12 +58,14 @@ static int ioctl_close_conn(int port_fd, int conn_id)
 {
     int ret;
 
-    ret = ioctl(port_fd, SHNET_PORT_CLOSE_CONN, conn_id);
+    ret = ioctl(port_fd, SHNET_PORT_CLOSE_CONN, &conn_id);
     if (ret == -1) {
-        fprintf(stderr, "SHNET_PORT_CLOSE_CONN failed: %s\n", strerror(ret));
+        fprintf(stderr, "SHNET_PORT_CLOSE_CONN failed: conn %d %s\n",
+		conn_id, strerror(ret));
         return ret;
     }
 
+    printf("shnet closed connection %d\n", conn_id);
     return 0;
 }
 
@@ -72,12 +75,13 @@ int main(int argc, char **argv)
     char shnet_port_name[80] = {0};
     struct shnet_req sreq;
     struct shnet_connection conn = {0};
+    struct shnet_reg reg = {0};
     
     char *buf = malloc(20);
     char *buf1 = malloc(10);
     char *buf2 = malloc(10);
 
-    while ((opt = getopt (argc, argv, "sr:")) != -1) {
+    while ((opt = getopt (argc, argv, "sr:g:")) != -1) {
         switch (opt) {
         case 's':
             sender = 1;
@@ -85,6 +89,9 @@ int main(int argc, char **argv)
         case 'r':
             r_id = atoi(optarg);
             break;
+	case 'g':
+	    reg.gid.id = atoi(optarg);
+	    break;
         default:
             exit(1);
         }
@@ -97,7 +104,7 @@ int main(int argc, char **argv)
     }
 
     printf("shnet fd opened\n");
-    port = ioctl_register_device(shnet_fd);
+    port = ioctl_register_device(shnet_fd, &reg);
     if (port <= 0) {
         err = port;
         printf("Can't open device file: %s\n", SHNET_FILE_NAME);
