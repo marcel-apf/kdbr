@@ -537,7 +537,7 @@ static int shnet_register_port(struct shnet_reg *reg)
 		goto fail_cdev;
 	}
 
-	pr_info("Registered device with gid [%lu,%lu] on port %d major %d\n",
+	pr_info("Registered device with gid [0x%lx,0x%lx] on port %d major %d\n",
 		port->gid.net_id, port->gid.id, port->id,
 		shnet_data.major);
 
