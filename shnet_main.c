@@ -256,7 +256,7 @@ static int shnet_open_connection(struct shnet_port *port,
 	int id, ret;
 	struct shnet_connection *conn;
 
-	conn = kzalloc(sizeof(*conn), GFP_KERNEL);
+	conn = kmalloc(sizeof(*conn), GFP_KERNEL);
 	if (conn == NULL)
 		return -ENOMEM;
 	memcpy(conn, user_conn, sizeof(*conn));
