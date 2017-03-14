@@ -50,6 +50,16 @@ struct shnet_completion_elem {
 	struct shnet_completion comp;
 };
 
+struct sg_vec {
+	/* TODO: Replace with ring buffer */
+	struct list_head list;
+	int vlen; /* <= SHNET_MAX_IOVEC_LEN */
+	struct page *userpage[SHNET_MAX_IOVEC_LEN];
+	void *userptr[SHNET_MAX_IOVEC_LEN];
+	int connection_id;
+	unsigned long req_id;
+};
+
 struct comp_ring {
 	/* List of 'completions' for this port */
 	struct list_head list;
@@ -79,6 +89,75 @@ struct shnet_port {
 	struct comp_ring comps;
 };
 
+/* Global routing table */
+struct peer_route {
+	/* TODO: Replace with RB-tree */
+	struct list_head list;
+	struct peer_key {
+		unsigned long net_id;
+		unsigned long id;
+		unsigned long queue;
+	} peer_key;
+	struct shnet_port *port;
+	struct shnet_connection *conn;
+};
+struct list_head global_route;
+
+static int add_global_route(unsigned long net_id, unsigned long id,
+			    unsigned long queue, struct shnet_port *port,
+			    struct shnet_connection *conn)
+{
+	/* TODO: No check is made to see if it is already there since we
+	 * will change the implementation anyway */
+	struct peer_route *peer_route = kmalloc(sizeof(*peer_route),
+						GFP_KERNEL);
+	if (!peer_route) {
+		pr_info("Fail to alloc route\n");
+		return -ENOMEM;
+	}
+
+	peer_route->peer_key.net_id = net_id;
+	peer_route->peer_key.id = id;
+	peer_route->peer_key.queue = queue;
+	peer_route->port = port;
+	peer_route->conn = conn;
+
+	list_add(&peer_route->list, &global_route);
+
+	return 0;
+}
+
+static void del_global_route(struct shnet_port *port,
+			     struct shnet_connection *conn)
+{
+	struct peer_route *pos, *next;
+
+	list_for_each_entry_safe(pos, next, &global_route, list) {
+		if ((pos->port == port) && (pos->conn == conn)) {
+			list_del(&pos->list);
+			kfree(pos);
+			return;
+		}
+	}
+}
+
+static int get_global_route(unsigned long net_id, unsigned long id,
+			    unsigned long queue, struct shnet_port **port,
+			    struct shnet_connection **conn)
+{
+	struct peer_route *pos, *next;
+
+	list_for_each_entry_safe(pos, next, &global_route, list) {
+		if ((pos->peer_key.net_id == net_id) && (pos->peer_key.id == id)
+		    && (pos->peer_key.queue == queue)) {
+			*port = pos->port;
+			*conn = pos->conn;
+			return 0;
+		}
+	}
+
+	return -EINVAL;
+}
 
 static int shnet_port_open(struct inode *inode, struct file *filp)
 {
@@ -125,17 +204,6 @@ static void shnet_print_iovec(const struct iovec *vec, int vlen)
 	pr_debug("\n");
 }
 
-struct shnet_recv {
-	struct shnet_req req;
-	const struct iovec __user *vec;
-	pid_t pid;
-	struct page *userpage;
-	void *userptr;
-	struct shnet_port *port;
-};
-
-static struct shnet_recv recv;
-
 int post_cqe(struct shnet_port *port, int connection_id, unsigned long req_id,
 	     int status)
 {
@@ -163,91 +231,164 @@ int post_cqe(struct shnet_port *port, int connection_id, unsigned long req_id,
 	return 0;
 }
 
+static struct shnet_connection *get_connection(struct shnet_port *port,
+					       int conn_id)
+{
+	struct shnet_connection *conn;
+
+	mutex_lock(&port->conn_mutex);
+	conn = idr_find(&port->conn_idr, conn_id);
+	mutex_unlock(&port->conn_mutex);
+	if (!conn)
+		pr_debug("Fail to find connection %d for port %d\n",
+			 conn_id, port->id);
+
+	return conn;
+}
+
+static void add_sg_vec(struct shnet_connection *conn, struct sg_vec *sg_vec)
+{
+	list_add(&sg_vec->list, conn->sg_vecs_list);
+}
+
+static struct sg_vec *get_sg_vec(struct shnet_connection *conn, int vlen)
+{
+	struct sg_vec *sg_vec;
+
+	if (list_empty(conn->sg_vecs_list)) {
+		pr_debug("conn %ld: No more buffers\n", conn->queue_id);
+		return NULL;
+	}
+
+	sg_vec = list_first_entry(conn->sg_vecs_list, struct sg_vec, list);
+
+	/* TODO: This limited implementation works only when top of the
+	 * list sg_vec has at least requested buffers.
+	 * In addition, no check is made with regards to buffers sizes */
+	if (sg_vec->vlen < vlen) {
+		pr_debug("conn %ld: Top sg_vec is small\n", conn->queue_id);
+		return NULL;
+	}
+
+	list_del(&sg_vec->list);
+
+	return sg_vec;
+}
+
 static int shnet_port_recv(struct shnet_port *port, struct shnet_req *req)
 {
-	int rc;
+	int rc, i;
 	int nr_pages;
 	int pg_offs;
+	struct shnet_connection *conn;
+	struct sg_vec *sg_vec;
 
-	pr_debug("shnet_port_recv\n");
-
-	if (!req->vlen) {
-		pr_debug("Empty request!\n");
+	if (!req->vlen)
 		return post_cqe(port, req->connection_id, req->req_id,
 				SHNET_ERR_CODE_EMPTY_VEC);
-	}
 	shnet_print_iovec(req->vec, req->vlen);
 
-	recv.pid = current->pid;
-	recv.vec = req->vec;
-	recv.port = port;
-
-	nr_pages = (req->vec[0].iov_len + PAGE_SIZE - 1) >> PAGE_SHIFT;
-	pg_offs = (unsigned long)req->vec[0].iov_base & (PAGE_SIZE - 1);
-	if (pg_offs) {
-		pr_info("Address %p is not aligned\n", req->vec[0].iov_base);
-		nr_pages++;
-	}
-
-	rc = get_user_pages_fast((unsigned long)req->vec[0].iov_base -
-				 pg_offs, nr_pages, 1, &recv.userpage);
-	if (rc != nr_pages) {
-		pr_err("get_user_pages_fast, requested %d, got %d\n", nr_pages,
-		       rc);
+	conn = get_connection(port, req->connection_id);
+	if (!conn)
 		return post_cqe(port, req->connection_id, req->req_id,
-				SHNET_ERR_CODE_INV_ADDR);
+				SHNET_ERR_CODE_INV_CONN_ID);
+
+	sg_vec = kmalloc(sizeof(*sg_vec), GFP_KERNEL);
+	sg_vec->vlen = req->vlen;
+	sg_vec->connection_id = req->connection_id;
+	sg_vec->req_id = req->req_id;
+
+	for (i = 0; i < sg_vec->vlen; i++) {
+		nr_pages = (req->vec[i].iov_len + PAGE_SIZE - 1) >> PAGE_SHIFT;
+		pg_offs = (unsigned long)req->vec[i].iov_base & (PAGE_SIZE - 1);
+
+		/* TODO: Need optimisation when several buffers share the
+		 * same page */
+		rc = get_user_pages_fast((unsigned long)req->vec[i].iov_base -
+					 pg_offs, nr_pages, 1,
+					 &sg_vec->userpage[i]);
+		if (rc != nr_pages) {
+			pr_debug("get_user_pages_fast, requested %d, got %d\n",
+				 nr_pages, rc);
+			return post_cqe(port, req->connection_id, req->req_id,
+					SHNET_ERR_CODE_INV_ADDR);
+		}
+
+		sg_vec->userptr[i] = kmap(sg_vec->userpage[i]) + pg_offs;
+		if (!sg_vec->userptr[i]) {
+			pr_debug("kmap = NULL\n");
+			return post_cqe(port, req->connection_id, req->req_id,
+					SHNET_ERR_CODE_INV_ADDR);
+		}
 	}
 
-	recv.userptr = kmap(recv.userpage) + pg_offs;
-	if (recv.userptr == NULL) {
-		pr_err("kmap = NULL\n");
-		return post_cqe(port, req->connection_id, req->req_id,
-				SHNET_ERR_CODE_INV_ADDR);
-	}
+	add_sg_vec(conn, sg_vec);
 
 	return 0;
 }
 
 static int snhet_port_send(struct shnet_port *port, struct shnet_req *req)
 {
-	ssize_t ret = 0;
+	int rc = 0, i;
+	struct shnet_peer *peer;
+	struct shnet_port *rport;
+	struct shnet_connection *conn, *rconn;
+	struct sg_vec *sg_vec;
 
 	pr_debug("shnet_port_send, remote net id 0x%lx, remote id 0x%lx, remote queue %ld\n",
 		req->peer.rgid.net_id, req->peer.rgid.id, req->peer.rqueue);
 	shnet_print_iovec(req->vec, req->vlen);
 
-	if (!req->vlen) {
-		pr_debug("Empty request!\n");
+	if (!req->vlen)
 		return post_cqe(port, req->connection_id, req->req_id,
 				SHNET_ERR_CODE_EMPTY_VEC);
-	}
 
-	if (recv.userptr) {
-		ret = copy_from_user(recv.userptr, req->vec[0].iov_base,
-				     req->vec[0].iov_len);
-		if (ret != 0)
-			ret = SHNET_ERR_CODE_RECV_BUF_PROT;
-
-		SetPageDirty(recv.userpage);
-		kunmap(recv.userptr);
-		put_page(recv.userpage);
-		recv.userptr = NULL;
-
-		post_cqe(recv.port, recv.req.connection_id, recv.req.req_id,
-			 ret);
+	/* Get peer attributes */
+	if (!req->peer.rqueue) {
+		conn = get_connection(port, req->connection_id);
+		if (!conn)
+			return post_cqe(port, req->connection_id, req->req_id,
+					SHNET_ERR_CODE_INV_CONN_ID);
+		peer = &conn->peer;
 	} else {
-		pr_err("Send w/o recv\n");
-		ret = SHNET_ERR_CODE_NO_MORE_RECV_BUF;
+		peer = &req->peer;
+	}
+	rc = get_global_route(peer->rgid.net_id, peer->rgid.id, peer->rqueue,
+			      &rport, &rconn);
+	if (rc)
+		return post_cqe(port, req->connection_id, req->req_id,
+				SHNET_ERR_CODE_NO_PEER);
+
+	/* Get next available buffers */
+	sg_vec = get_sg_vec(rconn, req->vlen);
+	if (!sg_vec)
+		return post_cqe(port, req->connection_id, req->req_id,
+				SHNET_ERR_CODE_NO_MORE_RECV_BUF);
+
+	/* Copy to peer */
+	for (i = 0; i < req->vlen; i++) {
+		rc = copy_from_user(sg_vec->userptr[i], req->vec[i].iov_base,
+				    req->vec[i].iov_len);
+		if (rc) {
+			post_cqe(rport, sg_vec->connection_id, sg_vec->req_id,
+				 SHNET_ERR_CODE_RECV_BUF_PROT);
+			kfree(sg_vec);
+			return post_cqe(port, req->connection_id, req->req_id,
+					SHNET_ERR_CODE_RECV_BUF_PROT);
+		}
+
+		SetPageDirty(sg_vec->userpage[i]);
+		kunmap(sg_vec->userptr[i]);
+		put_page(sg_vec->userpage[i]);
 	}
 
-	ret = post_cqe(port, req->connection_id, req->req_id, ret);
+	/* Post recv completion to peer */
+	post_cqe(rport, sg_vec->connection_id, sg_vec->req_id, 0);
 
-	pr_info("shnet: sent %lu(%ld) bytes to pid %d, copied %u vecs into %u vecs\n",
-		ret, (unsigned long)ret, recv.pid, req->vlen, recv.req.vlen);
+	kfree(sg_vec);
 
-	shnet_print_iovec(recv.req.vec, recv.req.vlen);
-
-	return ret;
+	/* Post send completion to requester */
+	return post_cqe(port, req->connection_id, req->req_id, 0);
 }
 
 static int shnet_open_connection(struct shnet_port *port,
@@ -257,9 +398,14 @@ static int shnet_open_connection(struct shnet_port *port,
 	struct shnet_connection *conn;
 
 	conn = kmalloc(sizeof(*conn), GFP_KERNEL);
-	if (conn == NULL)
+	if (conn == NULL) {
+		pr_debug("Fail to alloc conn obj\n");
 		return -ENOMEM;
+	}
+
 	memcpy(conn, user_conn, sizeof(*conn));
+	conn->sg_vecs_list = kmalloc(sizeof(*conn->sg_vecs_list), GFP_KERNEL);
+	INIT_LIST_HEAD(conn->sg_vecs_list);
 
 	idr_preload(GFP_KERNEL);
 	mutex_lock(&port->conn_mutex);
@@ -270,6 +416,14 @@ static int shnet_open_connection(struct shnet_port *port,
 	idr_preload_end();
 	if (id  <  0) {
 		ret = id;
+		goto err_conn;
+	}
+
+	ret = add_global_route(port->gid.net_id, port->gid.id, conn->queue_id,
+			       port, conn);
+	if (ret) {
+		/* TODO: Undo idr_alloc */
+		ret = -ENOMEM;
 		goto err_conn;
 	}
 
@@ -296,6 +450,8 @@ static int shnet_close_connection(struct shnet_port *port, int conn_id)
 		pr_debug("shnet close connection, can't find id %d\n", conn_id);
 		goto err;
 	}
+	del_global_route(port, conn);
+	kfree(conn->sg_vecs_list);
 
 	idr_remove(&port->conn_idr, conn_id);
 	kfree(conn);
@@ -611,8 +767,6 @@ static int __init shnet_init(void)
 	dev_t devt;
 	int ret;
 
-	recv.userptr = NULL;
-
 	ret = alloc_chrdev_region(&devt, 0, SHNET_MAX_PORTS, "shnet");
 	if (ret < 0) {
 		pr_debug("Error %d allocating chrdev region for shnet\n", ret);
@@ -645,6 +799,8 @@ static int __init shnet_init(void)
 
 	spin_lock_init(&shnet_data.lock);
 	INIT_LIST_HEAD(&shnet_data.ports);
+
+	INIT_LIST_HEAD(&global_route);
 
 	/* minor 0 is used by the shnet device */
 	set_bit(0, shnet_data.port_map);
