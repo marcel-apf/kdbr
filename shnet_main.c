@@ -88,12 +88,12 @@ static int shnet_port_open(struct inode *inode, struct file *filp)
 	filp->private_data = port;
 
 	if (!port) {
-		pr_err("shnet: port open - no port data\n");
+		pr_debug("shnet: port open - no port data\n");
 		return -1;
 	}
 
 	if (port->id <= 0) {
-		pr_err("shnet: port open - bad port id %d\n", port->id);
+		pr_debug("shnet: port open - bad port id %d\n", port->id);
 		return -1;
 	}
 
@@ -107,7 +107,7 @@ static int shnet_port_release(struct inode *inode, struct file *filp)
 
 	port = filp->private_data;
 	if (!port) {
-		pr_err("shnet: no port data\n");
+		pr_debug("shnet: no port data\n");
 		return 0;
 	}
 
@@ -120,9 +120,9 @@ static void shnet_print_iovec(const struct iovec *vec, int vlen)
 	int i;
 
 	for (i = 0; i < vlen; i++)
-		pr_info("addr %p, len %ld", vec[i].iov_base, vec[i].iov_len);
+		pr_debug("addr %p, len %ld", vec[i].iov_base, vec[i].iov_len);
 
-	pr_info("\n");
+	pr_debug("\n");
 }
 
 struct shnet_recv {
@@ -141,12 +141,12 @@ int post_cqe(struct shnet_port *port, int connection_id, unsigned long req_id,
 {
 	struct shnet_completion_elem *comp_elem;
 
-	pr_err("post_cqe: port_id=%d, connection_id=%d, req_id=%ld, status=%d\n",
-	       port->id, connection_id, req_id, status);
+	pr_debug("post_cqe: port_id=%d, connection_id=%d, req_id=%ld, status=%d\n",
+		 port->id, connection_id, req_id, status);
 
 	comp_elem = kmalloc(sizeof(struct shnet_completion_elem), GFP_KERNEL);
 	if (!comp_elem) {
-		pr_err("Fail to allocate completion-event\n");
+		pr_debug("Fail to allocate completion-event\n");
 		return -EINVAL;
 	}
 	comp_elem->comp.req_id = req_id;
@@ -169,10 +169,10 @@ static int shnet_port_recv(struct shnet_port *port, struct shnet_req *req)
 	int nr_pages;
 	int pg_offs;
 
-	pr_info("shnet_port_recv\n");
+	pr_debug("shnet_port_recv\n");
 
 	if (!req->vlen) {
-		pr_err("Empty request!\n");
+		pr_debug("Empty request!\n");
 		return post_cqe(port, req->connection_id, req->req_id,
 				SHNET_ERR_CODE_EMPTY_VEC);
 	}
@@ -212,12 +212,12 @@ static int snhet_port_send(struct shnet_port *port, struct shnet_req *req)
 {
 	ssize_t ret = 0;
 
-	pr_info("shnet_port_send, remote net id 0x%lx, remote id 0x%lx, remote queue %ld\n",
+	pr_debug("shnet_port_send, remote net id 0x%lx, remote id 0x%lx, remote queue %ld\n",
 		req->peer.rgid.net_id, req->peer.rgid.id, req->peer.rqueue);
 	shnet_print_iovec(req->vec, req->vlen);
 
 	if (!req->vlen) {
-		pr_err("Empty request!\n");
+		pr_debug("Empty request!\n");
 		return post_cqe(port, req->connection_id, req->req_id,
 				SHNET_ERR_CODE_EMPTY_VEC);
 	}
@@ -293,7 +293,7 @@ static int shnet_close_connection(struct shnet_port *port, int conn_id)
 	conn = idr_find(&port->conn_idr, conn_id);
 	if (conn == NULL) {
 		ret = -ENODEV;
-		pr_err("shnet close connection, can't find id %d\n", conn_id);
+		pr_debug("shnet close connection, can't find id %d\n", conn_id);
 		goto err;
 	}
 
@@ -319,7 +319,7 @@ static long shnet_port_ioctl(struct file *filp, unsigned int cmd,
 	int ret, conn_id;
 	struct shnet_connection conn;
 
-	pr_info("shnet driver ioctl called\n");
+	pr_debug("shnet driver ioctl called\n");
 
 	if (_IOC_TYPE(cmd) != SHNET_PORT_IOC_MAGIC)
 		return -ENOTTY;
@@ -363,8 +363,8 @@ ssize_t shnet_port_read(struct file *file, char __user *buf, size_t size,
 		if (sz + sizeof(comp_elem->comp) > size)
 			goto out;
 
-		pr_info("shnet_port_read: req_id=%ld, status=%d\n",
-			comp_elem->comp.req_id, comp_elem->comp.status);
+		pr_debug("shnet_port_read: req_id=%ld, status=%d\n",
+			 comp_elem->comp.req_id, comp_elem->comp.status);
 		rc = copy_to_user(buf + sz, &comp_elem->comp,
 				  sizeof(comp_elem->comp));
 		if (rc < 0) {
@@ -399,13 +399,13 @@ ssize_t shnet_port_write(struct file *file, const char __user *buf, size_t size,
 				    (struct shnet_req __user *)(buf + sz),
 				    sizeof(req));
 		if (rc) {
-			pr_err("Fail to copy from user buf, pos=%d\n", sz);
+			pr_debug("Fail to copy from user buf, pos=%d\n", sz);
 			return sz;
 		}
 
 		if ((req.flags & SHNET_REQ_SIGNATURE) != SHNET_REQ_SIGNATURE) {
-			pr_err("Invalid message signature 0x%x\n",
-			       req.flags & SHNET_REQ_SIGNATURE);
+			pr_debug("Invalid message signature 0x%x\n",
+				 req.flags & SHNET_REQ_SIGNATURE);
 			return sz;
 		}
 
@@ -463,7 +463,8 @@ static int shnet_unregister_port(int id)
 	struct shnet_port *port = NULL, *port2 = NULL;
 
 	if (id <= 0 || id > SHNET_MAX_PORTS) {
-		pr_err("shnet: unregister device - bad port id %d\n", port->id);
+		pr_debug("shnet: unregister device - bad port id %d\n",
+			 port->id);
 		return -EINVAL;
 	}
 
@@ -525,7 +526,7 @@ static int shnet_register_port(struct shnet_reg *reg)
 	devt = MKDEV(shnet_data.major, id);
 	ret = cdev_add(&port->cdev, devt, 1);
 	if (ret < 0) {
-		pr_err("Error %d adding cdev for shnet port %d\n", ret, id);
+		pr_debug("Error %d adding cdev for shnet port %d\n", ret, id);
 		goto fail_cdev;
 	}
 
@@ -533,7 +534,8 @@ static int shnet_register_port(struct shnet_reg *reg)
 				  id);
 	if (IS_ERR(port->dev)) {
 		ret = PTR_ERR(port->dev);
-		pr_err("Error %d creating device for shnet port %d\n", ret, id);
+		pr_debug("Error %d creating device for shnet port %d\n", ret,
+			 id);
 		goto fail_cdev;
 	}
 
@@ -559,7 +561,7 @@ static long shnet_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	int ret, port;
 	struct shnet_reg reg;
 
-	pr_info("shnet driver ioctl called\n");
+	pr_debug("shnet driver ioctl called\n");
 
 	if (_IOC_TYPE(cmd) != SHNET_IOC_MAGIC)
 		return -ENOTTY;
@@ -613,7 +615,7 @@ static int __init shnet_init(void)
 
 	ret = alloc_chrdev_region(&devt, 0, SHNET_MAX_PORTS, "shnet");
 	if (ret < 0) {
-		pr_err("Error %d allocating chrdev region for shnet\n", ret);
+		pr_debug("Error %d allocating chrdev region for shnet\n", ret);
 		return ret;
 	}
 	shnet_data.major = MAJOR(devt);
@@ -622,14 +624,14 @@ static int __init shnet_init(void)
 	shnet_data.cdev.owner = THIS_MODULE;
 	ret = cdev_add(&shnet_data.cdev, devt, 1);
 	if (ret < 0) {
-		pr_err("Error %d adding cdev for shnet\n", ret);
+		pr_debug("Error %d adding cdev for shnet\n", ret);
 		goto fail_chrdev;
 	}
 
 	shnet_data.class = class_create(THIS_MODULE, "shnet");
 	if (IS_ERR(shnet_data.class)) {
 		ret = PTR_ERR(shnet_data.class);
-		pr_err("Error %d creating shnet-class\n", ret);
+		pr_debug("Error %d creating shnet-class\n", ret);
 		goto fail_cdev;
 	}
 
@@ -637,7 +639,7 @@ static int __init shnet_init(void)
 				       "shnet");
 	if (IS_ERR(shnet_data.dev)) {
 		ret = PTR_ERR(shnet_data.dev);
-		pr_err("Error %d creating shnet device\n", ret);
+		pr_debug("Error %d creating shnet device\n", ret);
 		goto fail_class;
 	}
 
