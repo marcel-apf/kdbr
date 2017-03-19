@@ -49,10 +49,12 @@ struct shnet_peer {
 	unsigned long rqueue;
 };
 
+struct list_head;
 struct shnet_connection {
 	unsigned long queue_id;
 	struct shnet_peer peer;
 	enum shnet_ack_type ack_type;
+	struct list_head *sg_vecs_list;
 };
 
 struct shnet_reg {
@@ -75,10 +77,12 @@ struct shnet_req {
 	unsigned long req_id;
 };
 
-#define SHNET_ERR_CODE_EMPTY_VEC	-1
-#define SHNET_ERR_CODE_NO_MORE_RECV_BUF	-2
-#define SHNET_ERR_CODE_RECV_BUF_PROT	-3
-#define SHNET_ERR_CODE_INV_ADDR		-4
+#define SHNET_ERR_CODE_EMPTY_VEC	0x101
+#define SHNET_ERR_CODE_NO_MORE_RECV_BUF	0x102
+#define SHNET_ERR_CODE_RECV_BUF_PROT	0x103
+#define SHNET_ERR_CODE_INV_ADDR		0x104
+#define SHNET_ERR_CODE_INV_CONN_ID	0x105
+#define SHNET_ERR_CODE_NO_PEER		0x106
 
 struct shnet_completion {
 	int connection_id;
