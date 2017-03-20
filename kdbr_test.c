@@ -7,49 +7,49 @@
 #include <string.h>
 #include <termios.h>
 #include <errno.h>
-#include "shnet.h"
+#include "kdbr.h"
 
-static int ioctl_register_device(int shnet_fd, struct shnet_reg *reg)
+static int ioctl_register_device(int kdbr_fd, struct kdbr_reg *reg)
 {
     int ret;
 
-    printf("shnet register device\n");
-    ret = ioctl(shnet_fd, SHNET_REGISTER_PORT, reg);
+    printf("kdbr register device\n");
+    ret = ioctl(kdbr_fd, KDBR_REGISTER_PORT, reg);
     if (ret == -1) {
-        fprintf(stderr, "SHNET_REGISTER_DEVICE failed: %s\n", strerror(ret));
+        fprintf(stderr, "KDBR_REGISTER_DEVICE failed: %s\n", strerror(ret));
         return ret;
     }
 
-    printf("shnet device with gid %d registered to port %d\n",
+    printf("kdbr device with gid %ld registered to port %d\n",
 	   reg->gid.id, reg->port);
 
     return reg->port;
 }
 
-static int ioctl_unregister_device(int shnet_fd, int port)
+static int ioctl_unregister_device(int kdbr_fd, int port)
 {
     int ret;
 
-    printf("shnet unregister device at port %d\n", port);
-    ret = ioctl(shnet_fd, SHNET_UNREGISTER_PORT, &port);
+    printf("kdbr unregister device at port %d\n", port);
+    ret = ioctl(kdbr_fd, KDBR_UNREGISTER_PORT, &port);
     if (ret == -1) {
-        fprintf(stderr, "SHNET_UNREGISTER_DEVICE failed: %s\n", strerror(ret));
+        fprintf(stderr, "KDBR_UNREGISTER_DEVICE failed: %s\n", strerror(ret));
     }
 
     return ret;
 }
 
-static int ioctl_open_conn(int port_fd, struct shnet_connection *conn)
+static int ioctl_open_conn(int port_fd, struct kdbr_connection *conn)
 {
     int ret;
 
-    ret = ioctl(port_fd, SHNET_PORT_OPEN_CONN, conn);
+    ret = ioctl(port_fd, KDBR_PORT_OPEN_CONN, conn);
     if (ret == -1) {
-        fprintf(stderr, "SHNET_PORT_OPEN_CONN failed: %s\n", strerror(ret));
+        fprintf(stderr, "KDBR_PORT_OPEN_CONN failed: %s\n", strerror(ret));
         return ret;
     }
 
-    printf("shnet opened connection %d\n", ret);
+    printf("kdbr opened connection %d\n", ret);
 
     return ret;
 }
@@ -58,25 +58,24 @@ static int ioctl_close_conn(int port_fd, int conn_id)
 {
     int ret;
 
-    ret = ioctl(port_fd, SHNET_PORT_CLOSE_CONN, &conn_id);
+    ret = ioctl(port_fd, KDBR_PORT_CLOSE_CONN, &conn_id);
     if (ret == -1) {
-        fprintf(stderr, "SHNET_PORT_CLOSE_CONN failed: conn %d %s\n",
+        fprintf(stderr, "KDBR_PORT_CLOSE_CONN failed: conn %d %s\n",
 		conn_id, strerror(ret));
         return ret;
     }
 
-    printf("shnet closed connection %d\n", conn_id);
+    printf("kdbr closed connection %d\n", conn_id);
     return 0;
 }
 
 int main(int argc, char **argv)
 {
-    int shnet_fd, port_fd, port, err, opt, r_id, conn_id, sender = 0;
-    char shnet_port_name[80] = {0};
-    struct shnet_req sreq;
-    struct shnet_connection conn = {0};
-    struct shnet_reg reg = {0};
-    
+    int kdbr_fd, port_fd, port, err, opt, r_id, conn_id, sender = 0;
+    char kdbr_port_name[80] = {0};
+    struct kdbr_req sreq;
+    struct kdbr_connection conn = {0};
+    struct kdbr_reg reg = {0};
     char *buf = malloc(20);
     char *buf1 = malloc(10);
     char *buf2 = malloc(10);
@@ -97,28 +96,28 @@ int main(int argc, char **argv)
         }
     }
 
-    shnet_fd = open(SHNET_FILE_NAME, 0);
-    if (shnet_fd < 0) {
-        printf("Can't open device file: %s\n", SHNET_FILE_NAME);
+    kdbr_fd = open(KDBR_FILE_NAME, 0);
+    if (kdbr_fd < 0) {
+        printf("Can't open device file: %s\n", KDBR_FILE_NAME);
         exit(-1);
     }
 
-    printf("shnet fd opened\n");
-    port = ioctl_register_device(shnet_fd, &reg);
+    printf("kdbr fd opened\n");
+    port = ioctl_register_device(kdbr_fd, &reg);
     if (port <= 0) {
         err = port;
-        printf("Can't open device file: %s\n", SHNET_FILE_NAME);
-        goto fail_shnet_fd;
+        printf("Can't open device file: %s\n", KDBR_FILE_NAME);
+        goto fail_kdbr_fd;
     }
 
     printf("Opening port %d, pid %d\n", port, getpid());
 
-    sprintf(shnet_port_name, SHNET_FILE_NAME "%d", port);
-    port_fd = open(shnet_port_name, O_RDWR);
+    sprintf(kdbr_port_name, KDBR_FILE_NAME "%d", port);
+    port_fd = open(kdbr_port_name, O_RDWR);
     if (port_fd < 0) {
         err = port_fd;
-        printf("Can't open port file: %s%d, error %d\n", SHNET_FILE_NAME, port, errno);
-        goto fail_shnet_fd;
+        printf("Can't open port file: %s%d, error %d\n", KDBR_FILE_NAME, port, errno);
+        goto fail_kdbr_fd;
     }
 
     conn_id = ioctl_open_conn(port_fd, &conn);
@@ -132,7 +131,7 @@ int main(int argc, char **argv)
         sreq.vec[0].iov_len = 20;
         sreq.vlen = 1;
     } else {
-        struct shnet_req rreq;
+        struct kdbr_req rreq;
 
         /*
         rreq.vec[0].iov_base = buf2;
@@ -145,11 +144,11 @@ int main(int argc, char **argv)
         rreq.vec[0].iov_len = 20;
         rreq.vlen = 1;
 
-	rreq.flags = SHNET_REQ_SIGNATURE | SHNET_REQ_POST_RECV;
+	rreq.flags = KDBR_REQ_SIGNATURE | KDBR_REQ_POST_RECV;
 	err = write(port_fd, &rreq, sizeof(rreq));
 	if (err < 0) {
 		printf("write: err=%d, errno=%d\n", err, errno);
-        	goto fail_conn;
+		goto fail_conn;
 	}
     }
 
@@ -157,11 +156,11 @@ int main(int argc, char **argv)
     getchar();
 
     if (sender) {
-	sreq.flags = SHNET_REQ_SIGNATURE | SHNET_REQ_POST_SEND;
+	sreq.flags = KDBR_REQ_SIGNATURE | KDBR_REQ_POST_SEND;
 	err = write(port_fd, &sreq, sizeof(sreq));
 	if (err < 0) {
 		printf("write: err=%d, errno=%d\n", err, errno);
-        	goto fail_conn;
+		goto fail_conn;
 	}
         printf("Message sent - Press Any Key to Continue\n");
         getchar();
@@ -174,11 +173,11 @@ int main(int argc, char **argv)
     ioctl_close_conn(port_fd, conn_id);
     close(port_fd);
 
-    if (!ioctl_unregister_device(shnet_fd, port)) {
-        printf("shnet device at port %d unregistered\n", port);
+    if (!ioctl_unregister_device(kdbr_fd, port)) {
+        printf("kdbr device at port %d unregistered\n", port);
     }
-    close(shnet_fd);
-    printf("shnet fd and port %d closed\n", port);
+    close(kdbr_fd);
+    printf("kdbr fd and port %d closed\n", port);
     err = 0;
     goto out;
 
@@ -188,9 +187,9 @@ fail_conn:
 fail_port:
     close(port_fd);
 
-fail_shnet_fd:
-    close(shnet_fd);
-    printf("shnet fd closed\n");
+fail_kdbr_fd:
+    close(kdbr_fd);
+    printf("kdbr fd closed\n");
 
 out:
     free(buf2);
