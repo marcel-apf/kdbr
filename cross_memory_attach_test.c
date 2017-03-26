@@ -26,9 +26,9 @@ int main(int argc, char *argv[])
         pid_other = atoi(argv[1]);
         remote[0].iov_base = (void *)atol(argv[2]);
         printf("The other is %d, the other buffer address is %lu\n",
-               pid_other, remote[0].iov_base);
+               pid_other, (long unsigned int)remote[0].iov_base);
     } else {
-        printf("My pid is %d, my buff addr=%lu\n", getpid(), (void *)src_buf);
+        printf("My pid is %d, my buff addr=%lu\n", getpid(), (long unsigned int)src_buf);
         printf("Press Any Key to Continue\n");  
         getchar(); 
         return 0;

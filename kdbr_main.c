@@ -25,14 +25,14 @@
 #include <linux/idr.h>
 #include <linux/highmem.h>
 #include <asm/uaccess.h>
-#include "shnet.h"
+#include "kdbr.h"
 
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Marcel Apfelbaum");
 
-#define SHNET_MAX_PORTS 255
+#define KDBR_MAX_PORTS 255
 
-struct shnet_driver_data {
+struct kdbr_driver_data {
 	struct class *class;
 	struct device *dev;
 	struct cdev cdev;
@@ -40,22 +40,22 @@ struct shnet_driver_data {
 
 	spinlock_t lock;
 
-	DECLARE_BITMAP(port_map, SHNET_MAX_PORTS);
+	DECLARE_BITMAP(port_map, KDBR_MAX_PORTS);
 	struct list_head ports;
 };
-static struct shnet_driver_data shnet_data;
+static struct kdbr_driver_data kdbr_data;
 
-struct shnet_completion_elem {
+struct kdbr_completion_elem {
 	struct list_head list;
-	struct shnet_completion comp;
+	struct kdbr_completion comp;
 };
 
 struct sg_vec {
 	/* TODO: Replace with ring buffer */
 	struct list_head list;
-	int vlen; /* <= SHNET_MAX_IOVEC_LEN */
-	struct page *userpage[SHNET_MAX_IOVEC_LEN];
-	void *userptr[SHNET_MAX_IOVEC_LEN];
+	int vlen; /* <= KDBR_MAX_IOVEC_LEN */
+	struct page *userpage[KDBR_MAX_IOVEC_LEN];
+	void *userptr[KDBR_MAX_IOVEC_LEN];
 	int connection_id;
 	unsigned long req_id;
 };
@@ -68,11 +68,11 @@ struct comp_ring {
 	char data_flag;
 };
 
-struct shnet_port {
+struct kdbr_port {
 	struct cdev cdev;
 	struct device *dev;
 
-	/* Next port in the list, head is in the shnet_data */
+	/* Next port in the list, head is in the kdbr_data */
 	struct list_head list;
 
 	/* connection ids map */
@@ -80,7 +80,7 @@ struct shnet_port {
 	struct mutex conn_mutex;
 
 	/*port's global id*/
-	struct shnet_gid gid;
+	struct kdbr_gid gid;
 
 	/* port id - device minor */
 	int id;
@@ -98,14 +98,14 @@ struct peer_route {
 		unsigned long id;
 		unsigned long queue;
 	} peer_key;
-	struct shnet_port *port;
-	struct shnet_connection *conn;
+	struct kdbr_port *port;
+	struct kdbr_connection *conn;
 };
 struct list_head global_route;
 
 static int add_global_route(unsigned long net_id, unsigned long id,
-			    unsigned long queue, struct shnet_port *port,
-			    struct shnet_connection *conn)
+			    unsigned long queue, struct kdbr_port *port,
+			    struct kdbr_connection *conn)
 {
 	/* TODO: No check is made to see if it is already there since we
 	 * will change the implementation anyway */
@@ -127,8 +127,8 @@ static int add_global_route(unsigned long net_id, unsigned long id,
 	return 0;
 }
 
-static void del_global_route(struct shnet_port *port,
-			     struct shnet_connection *conn)
+static void del_global_route(struct kdbr_port *port,
+			     struct kdbr_connection *conn)
 {
 	struct peer_route *pos, *next;
 
@@ -142,8 +142,8 @@ static void del_global_route(struct shnet_port *port,
 }
 
 static int get_global_route(unsigned long net_id, unsigned long id,
-			    unsigned long queue, struct shnet_port **port,
-			    struct shnet_connection **conn)
+			    unsigned long queue, struct kdbr_port **port,
+			    struct kdbr_connection **conn)
 {
 	struct peer_route *pos, *next;
 
@@ -159,42 +159,42 @@ static int get_global_route(unsigned long net_id, unsigned long id,
 	return -EINVAL;
 }
 
-static int shnet_port_open(struct inode *inode, struct file *filp)
+static int kdbr_port_open(struct inode *inode, struct file *filp)
 {
-	struct shnet_port *port;
+	struct kdbr_port *port;
 
-	port = container_of(inode->i_cdev, struct shnet_port, cdev);
+	port = container_of(inode->i_cdev, struct kdbr_port, cdev);
 	filp->private_data = port;
 
 	if (!port) {
-		pr_debug("shnet: port open - no port data\n");
+		pr_debug("kdbr: port open - no port data\n");
 		return -1;
 	}
 
 	if (port->id <= 0) {
-		pr_debug("shnet: port open - bad port id %d\n", port->id);
+		pr_debug("kdbr: port open - bad port id %d\n", port->id);
 		return -1;
 	}
 
-	pr_info("shnet: port opened with id %d\n", port->id);
+	pr_info("kdbr: port opened with id %d\n", port->id);
 	return 0;
 }
 
-static int shnet_port_release(struct inode *inode, struct file *filp)
+static int kdbr_port_release(struct inode *inode, struct file *filp)
 {
-	struct shnet_port *port;
+	struct kdbr_port *port;
 
 	port = filp->private_data;
 	if (!port) {
-		pr_debug("shnet: no port data\n");
+		pr_debug("kdbr: no port data\n");
 		return 0;
 	}
 
-	pr_info("shnet port %d closed\n", port->id);
+	pr_info("kdbr port %d closed\n", port->id);
 	return 0;
 }
 
-static void shnet_print_iovec(const struct iovec *vec, int vlen)
+static void kdbr_print_iovec(const struct iovec *vec, int vlen)
 {
 	int i;
 
@@ -204,15 +204,15 @@ static void shnet_print_iovec(const struct iovec *vec, int vlen)
 	pr_debug("\n");
 }
 
-int post_cqe(struct shnet_port *port, int connection_id, unsigned long req_id,
+int post_cqe(struct kdbr_port *port, int connection_id, unsigned long req_id,
 	     int status)
 {
-	struct shnet_completion_elem *comp_elem;
+	struct kdbr_completion_elem *comp_elem;
 
 	pr_debug("post_cqe: port_id=%d, connection_id=%d, req_id=%ld, status=%d\n",
 		 port->id, connection_id, req_id, status);
 
-	comp_elem = kmalloc(sizeof(struct shnet_completion_elem), GFP_KERNEL);
+	comp_elem = kmalloc(sizeof(struct kdbr_completion_elem), GFP_KERNEL);
 	if (!comp_elem) {
 		pr_debug("Fail to allocate completion-event\n");
 		return -EINVAL;
@@ -231,10 +231,10 @@ int post_cqe(struct shnet_port *port, int connection_id, unsigned long req_id,
 	return 0;
 }
 
-static struct shnet_connection *get_connection(struct shnet_port *port,
+static struct kdbr_connection *get_connection(struct kdbr_port *port,
 					       int conn_id)
 {
-	struct shnet_connection *conn;
+	struct kdbr_connection *conn;
 
 	mutex_lock(&port->conn_mutex);
 	conn = idr_find(&port->conn_idr, conn_id);
@@ -246,52 +246,62 @@ static struct shnet_connection *get_connection(struct shnet_port *port,
 	return conn;
 }
 
-static void add_sg_vec(struct shnet_connection *conn, struct sg_vec *sg_vec)
+static void add_sg_vec(struct kdbr_connection *conn, struct sg_vec *sg_vec)
 {
+	mutex_lock(conn->sg_vecs_mutex);
 	list_add(&sg_vec->list, conn->sg_vecs_list);
+	mutex_unlock(conn->sg_vecs_mutex);
 }
 
-static struct sg_vec *get_sg_vec(struct shnet_connection *conn, int vlen)
+static struct sg_vec *get_sg_vec(struct kdbr_connection *conn, int vlen)
 {
-	struct sg_vec *sg_vec;
+	struct sg_vec *sg_vec = NULL;
 
+	mutex_lock(conn->sg_vecs_mutex);
 	if (list_empty(conn->sg_vecs_list)) {
 		pr_debug("conn %ld: No more buffers\n", conn->queue_id);
-		return NULL;
+		goto out;
 	}
 
-	sg_vec = list_first_entry(conn->sg_vecs_list, struct sg_vec, list);
+	sg_vec = list_last_entry(conn->sg_vecs_list, struct sg_vec, list);
+	if (!sg_vec) {
+		pr_debug("conn %ld: No more buffers\n", conn->queue_id);
+		goto out;
+	}
 
 	/* TODO: This limited implementation works only when top of the
 	 * list sg_vec has at least requested buffers.
 	 * In addition, no check is made with regards to buffers sizes */
 	if (sg_vec->vlen < vlen) {
-		pr_debug("conn %ld: Top sg_vec is small\n", conn->queue_id);
-		return NULL;
+		pr_err("conn %ld: Top sg_vec is small (%d<%d)\n",
+		       conn->queue_id, sg_vec->vlen, vlen);
+		goto out;
 	}
 
 	list_del(&sg_vec->list);
 
+out:
+	mutex_unlock(conn->sg_vecs_mutex);
 	return sg_vec;
 }
 
-static int shnet_port_recv(struct shnet_port *port, struct shnet_req *req)
+static int kdbr_port_recv(struct kdbr_port *port, struct kdbr_req *req)
 {
 	int rc, i;
 	int nr_pages;
 	int pg_offs;
-	struct shnet_connection *conn;
+	struct kdbr_connection *conn;
 	struct sg_vec *sg_vec;
 
 	if (!req->vlen)
 		return post_cqe(port, req->connection_id, req->req_id,
-				SHNET_ERR_CODE_EMPTY_VEC);
-	shnet_print_iovec(req->vec, req->vlen);
+				KDBR_ERR_CODE_EMPTY_VEC);
+	kdbr_print_iovec(req->vec, req->vlen);
 
 	conn = get_connection(port, req->connection_id);
 	if (!conn)
 		return post_cqe(port, req->connection_id, req->req_id,
-				SHNET_ERR_CODE_INV_CONN_ID);
+				KDBR_ERR_CODE_INV_CONN_ID);
 
 	sg_vec = kmalloc(sizeof(*sg_vec), GFP_KERNEL);
 	sg_vec->vlen = req->vlen;
@@ -302,7 +312,7 @@ static int shnet_port_recv(struct shnet_port *port, struct shnet_req *req)
 		nr_pages = (req->vec[i].iov_len + PAGE_SIZE - 1) >> PAGE_SHIFT;
 		pg_offs = (unsigned long)req->vec[i].iov_base & (PAGE_SIZE - 1);
 
-		/* TODO: Need optimisation when several buffers share the
+		/* TODO: Need optimization when several buffers share the
 		 * same page */
 		rc = get_user_pages_fast((unsigned long)req->vec[i].iov_base -
 					 pg_offs, nr_pages, 1,
@@ -311,14 +321,14 @@ static int shnet_port_recv(struct shnet_port *port, struct shnet_req *req)
 			pr_debug("get_user_pages_fast, requested %d, got %d\n",
 				 nr_pages, rc);
 			return post_cqe(port, req->connection_id, req->req_id,
-					SHNET_ERR_CODE_INV_ADDR);
+					KDBR_ERR_CODE_INV_ADDR);
 		}
 
 		sg_vec->userptr[i] = kmap(sg_vec->userpage[i]) + pg_offs;
 		if (!sg_vec->userptr[i]) {
 			pr_debug("kmap = NULL\n");
 			return post_cqe(port, req->connection_id, req->req_id,
-					SHNET_ERR_CODE_INV_ADDR);
+					KDBR_ERR_CODE_INV_ADDR);
 		}
 	}
 
@@ -327,28 +337,28 @@ static int shnet_port_recv(struct shnet_port *port, struct shnet_req *req)
 	return 0;
 }
 
-static int snhet_port_send(struct shnet_port *port, struct shnet_req *req)
+static int kdbr_port_send(struct kdbr_port *port, struct kdbr_req *req)
 {
 	int rc = 0, i;
-	struct shnet_peer *peer;
-	struct shnet_port *rport;
-	struct shnet_connection *conn, *rconn;
+	struct kdbr_peer *peer;
+	struct kdbr_port *rport;
+	struct kdbr_connection *conn, *rconn;
 	struct sg_vec *sg_vec;
 
-	pr_debug("shnet_port_send, remote net id 0x%lx, remote id 0x%lx, remote queue %ld\n",
-		req->peer.rgid.net_id, req->peer.rgid.id, req->peer.rqueue);
-	shnet_print_iovec(req->vec, req->vlen);
+	pr_debug("kdbr_port_send, remote net id 0x%lx, remote id 0x%lx, remote queue %ld\n",
+		 req->peer.rgid.net_id, req->peer.rgid.id, req->peer.rqueue);
+	kdbr_print_iovec(req->vec, req->vlen);
 
 	if (!req->vlen)
 		return post_cqe(port, req->connection_id, req->req_id,
-				SHNET_ERR_CODE_EMPTY_VEC);
+				KDBR_ERR_CODE_EMPTY_VEC);
 
 	/* Get peer attributes */
 	if (!req->peer.rqueue) {
 		conn = get_connection(port, req->connection_id);
 		if (!conn)
 			return post_cqe(port, req->connection_id, req->req_id,
-					SHNET_ERR_CODE_INV_CONN_ID);
+					KDBR_ERR_CODE_INV_CONN_ID);
 		peer = &conn->peer;
 	} else {
 		peer = &req->peer;
@@ -357,13 +367,13 @@ static int snhet_port_send(struct shnet_port *port, struct shnet_req *req)
 			      &rport, &rconn);
 	if (rc)
 		return post_cqe(port, req->connection_id, req->req_id,
-				SHNET_ERR_CODE_NO_PEER);
+				KDBR_ERR_CODE_NO_PEER);
 
 	/* Get next available buffers */
 	sg_vec = get_sg_vec(rconn, req->vlen);
 	if (!sg_vec)
 		return post_cqe(port, req->connection_id, req->req_id,
-				SHNET_ERR_CODE_NO_MORE_RECV_BUF);
+				KDBR_ERR_CODE_NO_MORE_RECV_BUF);
 
 	/* Copy to peer */
 	for (i = 0; i < req->vlen; i++) {
@@ -371,10 +381,10 @@ static int snhet_port_send(struct shnet_port *port, struct shnet_req *req)
 				    req->vec[i].iov_len);
 		if (rc) {
 			post_cqe(rport, sg_vec->connection_id, sg_vec->req_id,
-				 SHNET_ERR_CODE_RECV_BUF_PROT);
+				 KDBR_ERR_CODE_RECV_BUF_PROT);
 			kfree(sg_vec);
 			return post_cqe(port, req->connection_id, req->req_id,
-					SHNET_ERR_CODE_RECV_BUF_PROT);
+					KDBR_ERR_CODE_RECV_BUF_PROT);
 		}
 
 		SetPageDirty(sg_vec->userpage[i]);
@@ -391,11 +401,11 @@ static int snhet_port_send(struct shnet_port *port, struct shnet_req *req)
 	return post_cqe(port, req->connection_id, req->req_id, 0);
 }
 
-static int shnet_open_connection(struct shnet_port *port,
-				 struct shnet_connection *user_conn)
+static int kdbr_open_connection(struct kdbr_port *port,
+				struct kdbr_connection *user_conn)
 {
 	int id, ret;
-	struct shnet_connection *conn;
+	struct kdbr_connection *conn;
 
 	conn = kmalloc(sizeof(*conn), GFP_KERNEL);
 	if (conn == NULL) {
@@ -406,6 +416,8 @@ static int shnet_open_connection(struct shnet_port *port,
 	memcpy(conn, user_conn, sizeof(*conn));
 	conn->sg_vecs_list = kmalloc(sizeof(*conn->sg_vecs_list), GFP_KERNEL);
 	INIT_LIST_HEAD(conn->sg_vecs_list);
+	conn->sg_vecs_mutex = kmalloc(sizeof(*conn->sg_vecs_mutex), GFP_KERNEL);
+	mutex_init(conn->sg_vecs_mutex);
 
 	idr_preload(GFP_KERNEL);
 	mutex_lock(&port->conn_mutex);
@@ -427,7 +439,7 @@ static int shnet_open_connection(struct shnet_port *port,
 		goto err_conn;
 	}
 
-	pr_info("shnet open conn %d, r_net_id=0x%lx, r_id=0x%lx on port %d\n",
+	pr_info("kdbr open conn %d, r_net_id=0x%lx, r_id=0x%lx on port %d\n",
 		id, conn->peer.rgid.net_id, conn->peer.rgid.id, port->id);
 
 	return id;
@@ -438,27 +450,28 @@ err_conn:
 	return ret;
 }
 
-static int shnet_close_connection(struct shnet_port *port, int conn_id)
+static int kdbr_close_connection(struct kdbr_port *port, int conn_id)
 {
-	struct shnet_connection *conn;
+	struct kdbr_connection *conn;
 	int ret;
 
 	mutex_lock(&port->conn_mutex);
 	conn = idr_find(&port->conn_idr, conn_id);
 	if (conn == NULL) {
 		ret = -ENODEV;
-		pr_debug("shnet close connection, can't find id %d\n", conn_id);
+		pr_debug("kdbr close connection, can't find id %d\n", conn_id);
 		goto err;
 	}
 	del_global_route(port, conn);
 	kfree(conn->sg_vecs_list);
+	kfree(conn->sg_vecs_mutex);
 
 	idr_remove(&port->conn_idr, conn_id);
 	kfree(conn);
 
 	mutex_unlock(&port->conn_mutex);
 
-	pr_info("shnet close conn %d, r_net_id=0x%lx, r_id=0x%lx on port %d\n",
+	pr_info("kdbr close conn %d, r_net_id=0x%lx, r_id=0x%lx on port %d\n",
 		conn_id, conn->peer.rgid.net_id, conn->peer.rgid.id, port->id);
 
 	return 0;
@@ -469,33 +482,33 @@ err:
 	return ret;
 }
 
-static long shnet_port_ioctl(struct file *filp, unsigned int cmd,
+static long kdbr_port_ioctl(struct file *filp, unsigned int cmd,
 			     unsigned long arg)
 {
 	int ret, conn_id;
-	struct shnet_connection conn;
+	struct kdbr_connection conn;
 
-	pr_debug("shnet driver ioctl called\n");
+	pr_debug("kdbr driver ioctl called\n");
 
-	if (_IOC_TYPE(cmd) != SHNET_PORT_IOC_MAGIC)
+	if (_IOC_TYPE(cmd) != KDBR_PORT_IOC_MAGIC)
 		return -ENOTTY;
 
-	if (_IOC_NR(cmd) > SHNET_PORT_IOC_MAX)
+	if (_IOC_NR(cmd) > KDBR_PORT_IOC_MAX)
 		return -ENOTTY;
 
 	switch (cmd) {
-	case SHNET_PORT_OPEN_CONN:
+	case KDBR_PORT_OPEN_CONN:
 		ret = copy_from_user(&conn,
-				     (struct shnet_connection __user *)arg,
+				     (struct kdbr_connection __user *)arg,
 				     sizeof(conn));
 		if (!ret)
-			ret = shnet_open_connection(filp->private_data, &conn);
+			ret = kdbr_open_connection(filp->private_data, &conn);
 		break;
-	case SHNET_PORT_CLOSE_CONN:
+	case KDBR_PORT_CLOSE_CONN:
 		ret = get_user(conn_id,  (int __user *)arg);
 		if (!ret)
-			ret = shnet_close_connection(filp->private_data,
-						     conn_id);
+			ret = kdbr_close_connection(filp->private_data,
+						    conn_id);
 		break;
 	default:
 		return -ENOTTY;
@@ -504,13 +517,13 @@ static long shnet_port_ioctl(struct file *filp, unsigned int cmd,
 	return ret;
 }
 
-ssize_t shnet_port_read(struct file *file, char __user *buf, size_t size,
-			loff_t *ppos)
+ssize_t kdbr_port_read(struct file *file, char __user *buf, size_t size,
+		       loff_t *ppos)
 {
-	struct shnet_completion_elem *comp_elem, *next;
+	struct kdbr_completion_elem *comp_elem, *next;
 	int rc;
 	size_t sz = 0;
-	struct shnet_port *port = file->private_data;
+	struct kdbr_port *port = file->private_data;
 
 	wait_event_interruptible(port->comps.queue, port->comps.data_flag);
 
@@ -519,7 +532,7 @@ ssize_t shnet_port_read(struct file *file, char __user *buf, size_t size,
 		if (sz + sizeof(comp_elem->comp) > size)
 			goto out;
 
-		pr_debug("shnet_port_read: req_id=%ld, status=%d\n",
+		pr_debug("kdbr_port_read: req_id=%ld, status=%d\n",
 			 comp_elem->comp.req_id, comp_elem->comp.status);
 		rc = copy_to_user(buf + sz, &comp_elem->comp,
 				  sizeof(comp_elem->comp));
@@ -541,35 +554,35 @@ out:
 	return sz;
 }
 
-ssize_t shnet_port_write(struct file *file, const char __user *buf, size_t size,
-			 loff_t *ppos)
+ssize_t kdbr_port_write(struct file *file, const char __user *buf, size_t size,
+		        loff_t *ppos)
 {
 	int rc, sz = 0;
-	struct shnet_req req;
+	struct kdbr_req req;
 
 	while (1) {
 		if (sz + sizeof(req) > size)
 			goto out;
 
 		rc = copy_from_user(&req,
-				    (struct shnet_req __user *)(buf + sz),
+				    (struct kdbr_req __user *)(buf + sz),
 				    sizeof(req));
 		if (rc) {
 			pr_debug("Fail to copy from user buf, pos=%d\n", sz);
 			return sz;
 		}
 
-		if ((req.flags & SHNET_REQ_SIGNATURE) != SHNET_REQ_SIGNATURE) {
+		if ((req.flags & KDBR_REQ_SIGNATURE) != KDBR_REQ_SIGNATURE) {
 			pr_debug("Invalid message signature 0x%x\n",
-				 req.flags & SHNET_REQ_SIGNATURE);
+				 req.flags & KDBR_REQ_SIGNATURE);
 			return sz;
 		}
 
-		if ((req.flags & SHNET_REQ_POST_RECV) == SHNET_REQ_POST_RECV)
-			rc = shnet_port_recv(file->private_data, &req);
+		if ((req.flags & KDBR_REQ_POST_RECV) == KDBR_REQ_POST_RECV)
+			rc = kdbr_port_recv(file->private_data, &req);
 
-		if ((req.flags & SHNET_REQ_POST_SEND) == SHNET_REQ_POST_SEND)
-			rc = snhet_port_send(file->private_data, &req);
+		if ((req.flags & KDBR_REQ_POST_SEND) == KDBR_REQ_POST_SEND)
+			rc = kdbr_port_send(file->private_data, &req);
 
 		sz += sizeof(req);
 	}
@@ -578,57 +591,56 @@ out:
 	return sz;
 }
 
-static const struct file_operations shnet_port_ops = {
+static const struct file_operations kdbr_port_ops = {
 	.owner		= THIS_MODULE,
-	.unlocked_ioctl	= shnet_port_ioctl,
-	.open		= shnet_port_open,
-	.release	= shnet_port_release,
-	.read		= shnet_port_read,
-	.write		= shnet_port_write,
+	.unlocked_ioctl	= kdbr_port_ioctl,
+	.open		= kdbr_port_open,
+	.release	= kdbr_port_release,
+	.read		= kdbr_port_read,
+	.write		= kdbr_port_write,
 };
 
-static int shnet_conn_idr_cleanup(int id, void *p, void *data)
+static int kdbr_conn_idr_cleanup(int id, void *p, void *data)
 {
-	kfree((struct shnet_connection *)p);
+	kfree((struct kdbr_connection *)p);
 
 	return 0;
 }
 
-static void shnet_delete_port(struct shnet_port *port)
+static void kdbr_delete_port(struct kdbr_port *port)
 {
-	spin_lock_irq(&shnet_data.lock);
+	spin_lock_irq(&kdbr_data.lock);
 
 	list_del(&port->list);
-	clear_bit(port->id, shnet_data.port_map);
+	clear_bit(port->id, kdbr_data.port_map);
 
-	spin_unlock_irq(&shnet_data.lock);
+	spin_unlock_irq(&kdbr_data.lock);
 
-	idr_for_each(&port->conn_idr, shnet_conn_idr_cleanup, NULL);
+	idr_for_each(&port->conn_idr, kdbr_conn_idr_cleanup, NULL);
 	idr_destroy(&port->conn_idr);
 }
 
-static void shnet_destroy_device(struct shnet_port *port)
+static void kdbr_destroy_device(struct kdbr_port *port)
 {
-	device_destroy(shnet_data.class, port->cdev.dev);
+	device_destroy(kdbr_data.class, port->cdev.dev);
 	cdev_del(&port->cdev);
 	kfree(port);
 }
 
-static int shnet_unregister_port(int id)
+static int kdbr_unregister_port(int id)
 {
-	struct shnet_port *port = NULL, *port2 = NULL;
+	struct kdbr_port *port = NULL, *port2 = NULL;
 
-	if (id <= 0 || id > SHNET_MAX_PORTS) {
-		pr_debug("shnet: unregister device - bad port id %d\n",
-			 port->id);
+	if (id <= 0 || id > KDBR_MAX_PORTS) {
+		pr_debug("kdbr: unregister device, bad port id %d\n", port->id);
 		return -EINVAL;
 	}
 
-	list_for_each_entry_safe(port, port2, &shnet_data.ports, list) {
+	list_for_each_entry_safe(port, port2, &kdbr_data.ports, list) {
 		if (port->id == id) {
 			pr_info("Unregistered device on port %d\n", port->id);
-			shnet_delete_port(port);
-			shnet_destroy_device(port);
+			kdbr_delete_port(port);
+			kdbr_destroy_device(port);
 			return 0;
 		}
 	}
@@ -636,9 +648,9 @@ static int shnet_unregister_port(int id)
 	return -ENODEV;
 }
 
-static int shnet_register_port(struct shnet_reg *reg)
+static int kdbr_register_port(struct kdbr_reg *reg)
 {
-	struct shnet_port *port;
+	struct kdbr_port *port;
 	dev_t devt;
 	int id;
 	int ret;
@@ -649,21 +661,21 @@ static int shnet_register_port(struct shnet_reg *reg)
 		goto fail;
 	}
 
-	spin_lock_irq(&shnet_data.lock);
+	spin_lock_irq(&kdbr_data.lock);
 
-	id = find_first_zero_bit(shnet_data.port_map, SHNET_MAX_PORTS);
-	if (id == SHNET_MAX_PORTS) {
-		spin_unlock_irq(&shnet_data.lock);
+	id = find_first_zero_bit(kdbr_data.port_map, KDBR_MAX_PORTS);
+	if (id == KDBR_MAX_PORTS) {
+		spin_unlock_irq(&kdbr_data.lock);
 		ret = -ENOSPC;
 		goto fail_port;
 	}
 
-	set_bit(id, shnet_data.port_map);
+	set_bit(id, kdbr_data.port_map);
 	port->id = id;
 	port->pid = current->pid;
 	port->gid.net_id = reg->gid.net_id;
 	port->gid.id = reg->gid.id;
-	list_add_tail(&port->list, &shnet_data.ports);
+	list_add_tail(&port->list, &kdbr_data.ports);
 
 	reg->port = id;
 
@@ -672,38 +684,38 @@ static int shnet_register_port(struct shnet_reg *reg)
 	port->comps.data_flag = 0;
 	init_waitqueue_head(&port->comps.queue);
 
-	spin_unlock_irq(&shnet_data.lock);
+	spin_unlock_irq(&kdbr_data.lock);
 
 	mutex_init(&port->conn_mutex);
 	idr_init(&port->conn_idr);
 
-	cdev_init(&port->cdev, &shnet_port_ops);
+	cdev_init(&port->cdev, &kdbr_port_ops);
 	port->cdev.owner = THIS_MODULE;
-	devt = MKDEV(shnet_data.major, id);
+	devt = MKDEV(kdbr_data.major, id);
 	ret = cdev_add(&port->cdev, devt, 1);
 	if (ret < 0) {
-		pr_debug("Error %d adding cdev for shnet port %d\n", ret, id);
+		pr_debug("Error %d adding cdev for kdbr port %d\n", ret, id);
 		goto fail_cdev;
 	}
 
-	port->dev = device_create(shnet_data.class, NULL, devt, port, "shnet%d",
+	port->dev = device_create(kdbr_data.class, NULL, devt, port, "kdbr%d",
 				  id);
 	if (IS_ERR(port->dev)) {
 		ret = PTR_ERR(port->dev);
-		pr_debug("Error %d creating device for shnet port %d\n", ret,
+		pr_debug("Error %d creating device for kdbr port %d\n", ret,
 			 id);
 		goto fail_cdev;
 	}
 
 	pr_info("Registered device with gid [0x%lx,0x%lx] on port %d major %d\n",
 		port->gid.net_id, port->gid.id, port->id,
-		shnet_data.major);
+		kdbr_data.major);
 
 	return 0;
 
 fail_cdev:
 	cdev_del(&port->cdev);
-	shnet_delete_port(port);
+	kdbr_delete_port(port);
 
 fail_port:
 	kfree(port);
@@ -712,36 +724,36 @@ fail:
 	return ret;
 }
 
-static long shnet_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+static long kdbr_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	int ret, port;
-	struct shnet_reg reg;
+	struct kdbr_reg reg;
 
-	pr_debug("shnet driver ioctl called\n");
+	pr_debug("kdbr driver ioctl called\n");
 
-	if (_IOC_TYPE(cmd) != SHNET_IOC_MAGIC)
+	if (_IOC_TYPE(cmd) != KDBR_IOC_MAGIC)
 		return -ENOTTY;
 
-	if (_IOC_NR(cmd) > SHNET_IOC_MAX)
+	if (_IOC_NR(cmd) > KDBR_IOC_MAX)
 		return -ENOTTY;
 
 	switch (cmd) {
-	case SHNET_REGISTER_PORT:
-		ret = copy_from_user(&reg, (struct shnet_reg __user *)arg,
+	case KDBR_REGISTER_PORT:
+		ret = copy_from_user(&reg, (struct kdbr_reg __user *)arg,
 				     sizeof(reg));
 		if (ret)
 			return -EFAULT;
 
-		ret = shnet_register_port(&reg);
+		ret = kdbr_register_port(&reg);
 		if (!ret)
-			ret = copy_to_user((struct shnet_reg __user *)arg,
+			ret = copy_to_user((struct kdbr_reg __user *)arg,
 					   &reg, sizeof(reg));
 
 		break;
-	case SHNET_UNREGISTER_PORT:
+	case KDBR_UNREGISTER_PORT:
 		ret = get_user(port, (int __user *)arg);
 		if (!ret)
-			ret = shnet_unregister_port(port);
+			ret = kdbr_unregister_port(port);
 		break;
 	default:
 		return -ENOTTY;
@@ -750,95 +762,95 @@ static long shnet_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	return ret;
 }
 
-int shnet_release(struct inode *inode, struct file *filp)
+int kdbr_release(struct inode *inode, struct file *filp)
 {
 	return 0;
 }
 
-static const struct file_operations shnet_ops = {
+static const struct file_operations kdbr_ops = {
 	.owner		= THIS_MODULE,
-	.unlocked_ioctl	= shnet_ioctl,
+	.unlocked_ioctl	= kdbr_ioctl,
 	.open		= nonseekable_open,
-	.release	= shnet_release,
+	.release	= kdbr_release,
 };
 
-static int __init shnet_init(void)
+static int __init kdbr_init(void)
 {
 	dev_t devt;
 	int ret;
 
-	ret = alloc_chrdev_region(&devt, 0, SHNET_MAX_PORTS, "shnet");
+	ret = alloc_chrdev_region(&devt, 0, KDBR_MAX_PORTS, "kdbr");
 	if (ret < 0) {
-		pr_debug("Error %d allocating chrdev region for shnet\n", ret);
+		pr_debug("Error %d allocating chrdev region for kdbr\n", ret);
 		return ret;
 	}
-	shnet_data.major = MAJOR(devt);
+	kdbr_data.major = MAJOR(devt);
 
-	cdev_init(&shnet_data.cdev, &shnet_ops);
-	shnet_data.cdev.owner = THIS_MODULE;
-	ret = cdev_add(&shnet_data.cdev, devt, 1);
+	cdev_init(&kdbr_data.cdev, &kdbr_ops);
+	kdbr_data.cdev.owner = THIS_MODULE;
+	ret = cdev_add(&kdbr_data.cdev, devt, 1);
 	if (ret < 0) {
-		pr_debug("Error %d adding cdev for shnet\n", ret);
+		pr_debug("Error %d adding cdev for kdbr\n", ret);
 		goto fail_chrdev;
 	}
 
-	shnet_data.class = class_create(THIS_MODULE, "shnet");
-	if (IS_ERR(shnet_data.class)) {
-		ret = PTR_ERR(shnet_data.class);
-		pr_debug("Error %d creating shnet-class\n", ret);
+	kdbr_data.class = class_create(THIS_MODULE, "kdbr");
+	if (IS_ERR(kdbr_data.class)) {
+		ret = PTR_ERR(kdbr_data.class);
+		pr_debug("Error %d creating kdbr-class\n", ret);
 		goto fail_cdev;
 	}
 
-	shnet_data.dev = device_create(shnet_data.class, NULL, devt, NULL,
-				       "shnet");
-	if (IS_ERR(shnet_data.dev)) {
-		ret = PTR_ERR(shnet_data.dev);
-		pr_debug("Error %d creating shnet device\n", ret);
+	kdbr_data.dev = device_create(kdbr_data.class, NULL, devt, NULL,
+				      "kdbr");
+	if (IS_ERR(kdbr_data.dev)) {
+		ret = PTR_ERR(kdbr_data.dev);
+		pr_debug("Error %d creating kdbr device\n", ret);
 		goto fail_class;
 	}
 
-	spin_lock_init(&shnet_data.lock);
-	INIT_LIST_HEAD(&shnet_data.ports);
+	spin_lock_init(&kdbr_data.lock);
+	INIT_LIST_HEAD(&kdbr_data.ports);
 
 	INIT_LIST_HEAD(&global_route);
 
-	/* minor 0 is used by the shnet device */
-	set_bit(0, shnet_data.port_map);
+	/* minor 0 is used by the kdbr device */
+	set_bit(0, kdbr_data.port_map);
 
-	pr_info("shnet driver loaded\n");
+	pr_info("kdbr driver loaded\n");
 	return 0;
 
 
 fail_class:
-	class_destroy(shnet_data.class);
+	class_destroy(kdbr_data.class);
 
 fail_cdev:
-	cdev_del(&shnet_data.cdev);
+	cdev_del(&kdbr_data.cdev);
 
 fail_chrdev:
-	unregister_chrdev_region(devt, SHNET_MAX_PORTS);
+	unregister_chrdev_region(devt, KDBR_MAX_PORTS);
 
 	return ret;
-} 
-EXPORT_SYMBOL_GPL(shnet_init);
+}
+EXPORT_SYMBOL_GPL(kdbr_init);
 
-static void __exit shnet_exit(void)
+static void __exit kdbr_exit(void)
 {
-	struct shnet_port *port = NULL, *port2 = NULL;
+	struct kdbr_port *port = NULL, *port2 = NULL;
 
-	list_for_each_entry_safe(port, port2, &shnet_data.ports, list) {
-		shnet_delete_port(port);
-		shnet_destroy_device(port);
+	list_for_each_entry_safe(port, port2, &kdbr_data.ports, list) {
+		kdbr_delete_port(port);
+		kdbr_destroy_device(port);
 	}
 
-	device_destroy(shnet_data.class, MKDEV(shnet_data.major, 0));
-	class_destroy(shnet_data.class);
-	cdev_del(&shnet_data.cdev);
-	unregister_chrdev_region(MKDEV(shnet_data.major, 0), SHNET_MAX_PORTS);
+	device_destroy(kdbr_data.class, MKDEV(kdbr_data.major, 0));
+	class_destroy(kdbr_data.class);
+	cdev_del(&kdbr_data.cdev);
+	unregister_chrdev_region(MKDEV(kdbr_data.major, 0), KDBR_MAX_PORTS);
 
-	pr_info("shnet driver unloaded\n");
-} 
-EXPORT_SYMBOL_GPL(shnet_exit);
+	pr_info("kdbr driver unloaded\n");
+}
+EXPORT_SYMBOL_GPL(kdbr_exit);
 
-module_init(shnet_init); 
-module_exit(shnet_exit);
+module_init(kdbr_init);
+module_exit(kdbr_exit);

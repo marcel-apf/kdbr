@@ -1,5 +1,5 @@
 #ccflags-y := -I$(src)/include
 
-obj-m := shnet.o
+obj-m := kdbr.o
 
-shnet-y := shnet_main.o
+kdbr-y := kdbr_main.o
