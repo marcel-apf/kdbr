@@ -345,8 +345,9 @@ static int kdbr_port_send(struct kdbr_port *port, struct kdbr_req *req)
 	struct kdbr_connection *conn, *rconn;
 	struct sg_vec *sg_vec;
 
-	pr_debug("kdbr_port_send, remote net id 0x%lx, remote id 0x%lx, remote queue %ld\n",
-		 req->peer.rgid.net_id, req->peer.rgid.id, req->peer.rqueue);
+	pr_debug("kdbr_port_send, conn id %d, remote net id 0x%lx, remote id 0x%lx, remote queue %ld\n",
+		 req->connection_id, req->peer.rgid.net_id,
+		 req->peer.rgid.id, req->peer.rqueue);
 	kdbr_print_iovec(req->vec, req->vlen);
 
 	if (!req->vlen)
