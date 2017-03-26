@@ -55,6 +55,7 @@ struct kdbr_connection {
 	unsigned long queue_id;
 	struct kdbr_peer peer;
 	enum kdbr_ack_type ack_type;
+	/* TODO: hide the below fields in the .c file */
 	struct list_head *sg_vecs_list;
 	struct mutex *sg_vecs_mutex;
 };
