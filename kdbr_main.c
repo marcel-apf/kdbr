@@ -1,5 +1,5 @@
 /*
- * Kernel-based shared networking driver for Linux
+ * Kernel Data Bridge driver for Linux
  *
  * This module enables machines with Intel VT-x extensions to run virtual
  * machines without emulation or binary translation.

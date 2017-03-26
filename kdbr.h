@@ -1,5 +1,5 @@
 /*
- * Kernel-based shared networking driver - API
+ * Kernel Data Bridge driver - API
  *
  * Copyright 2016 Red Hat, Inc.
  * Copyright 2016 Oracle
