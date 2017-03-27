@@ -209,7 +209,7 @@ int post_cqe(struct kdbr_port *port, int connection_id, unsigned long req_id,
 {
 	struct kdbr_completion_elem *comp_elem;
 
-	pr_debug("post_cqe: port_id=%d, connection_id=%d, req_id=%ld, status=%d\n",
+	pr_debug("post_cqe: port_id=%d, connection_id=%d, req_id=%ld, status=0x%lx\n",
 		 port->id, connection_id, req_id, status);
 
 	comp_elem = kmalloc(sizeof(struct kdbr_completion_elem), GFP_KERNEL);
