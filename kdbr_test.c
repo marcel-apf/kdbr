@@ -42,8 +42,9 @@ static int connect(int port_fd, struct kdbr_connection *conn)
 {
     int ret;
 
-    printf("Connecting to net_id 0x%lx, id 0x%lx, queue 0x%lx\n",
-           conn->peer.rgid.net_id, conn->peer.rgid.id, conn->peer.rqueue);
+    printf("Connecting queue 0x%lx to net_id 0x%lx id 0x%lx rqueue 0x%lx\n",
+           conn->queue_id, conn->peer.rgid.net_id, conn->peer.rgid.id,
+	   conn->peer.rqueue);
 
     ret = ioctl(port_fd, KDBR_PORT_OPEN_CONN, conn);
     if (ret == -1) {
