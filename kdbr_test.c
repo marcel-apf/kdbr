@@ -9,39 +9,41 @@
 #include <errno.h>
 #include "kdbr.h"
 
-static int ioctl_register_port(int kdbr_fd, struct kdbr_reg *reg)
+static int register_port(int kdbr_fd, struct kdbr_reg *reg)
 {
     int ret;
 
-    printf("kdbr register port\n");
+    printf("Registering port net_id 0x%lx, id 0x%lx\n", reg->gid.net_id,
+           reg->gid.id);
     ret = ioctl(kdbr_fd, KDBR_REGISTER_PORT, reg);
     if (ret == -1) {
         fprintf(stderr, "KDBR_REGISTER_DEVICE failed: %s\n", strerror(ret));
         return ret;
     }
 
-    printf("kdbr device with gid %ld registered to port %d\n",
-	   reg->gid.id, reg->port);
+    printf("Registered to kdbr port %d\n", reg->port);
 
-    return reg->port;
+    return 0;
 }
 
-static int ioctl_unregister_device(int kdbr_fd, int port)
+static int unregister_port(int kdbr_fd, int port)
 {
     int ret;
 
-    printf("kdbr unregister device at port %d\n", port);
+    printf("kdbr unregister port at port %d\n", port);
     ret = ioctl(kdbr_fd, KDBR_UNREGISTER_PORT, &port);
-    if (ret == -1) {
+    if (ret == -1)
         fprintf(stderr, "KDBR_UNREGISTER_DEVICE failed: %s\n", strerror(ret));
-    }
 
     return ret;
 }
 
-static int ioctl_open_conn(int port_fd, struct kdbr_connection *conn)
+static int connect(int port_fd, struct kdbr_connection *conn)
 {
     int ret;
+
+    printf("Connecting to net_id 0x%lx, id 0x%lx, queue 0x%lx\n",
+           conn->peer.rgid.net_id, conn->peer.rgid.id, conn->peer.rqueue);
 
     ret = ioctl(port_fd, KDBR_PORT_OPEN_CONN, conn);
     if (ret == -1) {
@@ -49,12 +51,12 @@ static int ioctl_open_conn(int port_fd, struct kdbr_connection *conn)
         return ret;
     }
 
-    printf("kdbr opened connection %d\n", ret);
+    printf("Connected (conn_id %d)\n", ret);
 
     return ret;
 }
 
-static int ioctl_close_conn(int port_fd, int conn_id)
+static int disconnect(int port_fd, int conn_id)
 {
     int ret;
 
@@ -71,12 +73,20 @@ static int ioctl_close_conn(int port_fd, int conn_id)
 
 int main(int argc, char **argv)
 {
-    int kdbr_fd, port_fd, port, err, conn_id, opt, sender = 0;
+    int kdbr_fd, port_fd, err, conn_id, opt, sender = 0;
     char kdbr_port_name[80] = {0};
     struct kdbr_req sreq;
     struct kdbr_connection conn = {0};
     struct kdbr_reg reg = {0};
     char *buf = malloc(20);
+
+    /* Open kdbr device file */
+    kdbr_fd = open(KDBR_FILE_NAME, 0);
+    if (kdbr_fd < 0) {
+        printf("Can't open device file: %s\n", KDBR_FILE_NAME);
+        exit(-1);
+    }
+    printf("kdbr fd opened\n");
 
     while ((opt = getopt (argc, argv, "sg:p:q:r:")) != -1) {
         switch (opt) {
@@ -100,42 +110,28 @@ int main(int argc, char **argv)
         }
     }
 
-    kdbr_fd = open(KDBR_FILE_NAME, 0);
-    if (kdbr_fd < 0) {
-        printf("Can't open device file: %s\n", KDBR_FILE_NAME);
-        exit(-1);
-    }
-
-    printf("kdbr fd opened\n");
-    port = ioctl_register_port(kdbr_fd, &reg);
-    if (port <= 0) {
-        err = port;
-        printf("Can't open device file: %s\n", KDBR_FILE_NAME);
+    /* Register our port (net_id and id) */
+    err = register_port(kdbr_fd, &reg);
+    if (err)
         goto fail_kdbr_fd;
-    }
 
-    printf("Opening port %d, gid %d, peer gid %d, queue %d, remote queue %d\n",
-	    port, reg.gid.id, conn.peer.rgid.id, conn.queue_id, conn.peer.rqueue);
-
-    sprintf(kdbr_port_name, KDBR_FILE_NAME "%d", port);
+    /* Open the new port's device file */
+    sprintf(kdbr_port_name, KDBR_FILE_NAME "%d", reg.port);
     port_fd = open(kdbr_port_name, O_RDWR);
     if (port_fd < 0) {
         err = port_fd;
-        printf("Can't open port file: %s%d, error %d\n", KDBR_FILE_NAME, port, errno);
+        printf("Can't open port file: %s%d, error %d\n", KDBR_FILE_NAME,
+               reg.port, errno);
         goto fail_kdbr_fd;
     }
 
-    conn_id = ioctl_open_conn(port_fd, &conn);
+    /* Connect to peer */
+    conn_id = connect(port_fd, &conn);
     if (conn_id < 0)
         goto fail_port;
 
-    if (sender) {
-        strcpy(buf, "Hello world!!!");
-
-        sreq.vec[0].iov_base = buf;
-        sreq.vec[0].iov_len = 20;
-        sreq.vlen = 1;
-    } else {
+    if (!sender) {
+        /* Register buffer for receive  */
         struct kdbr_req rreq;
 
         rreq.vec[0].iov_base = buf;
@@ -149,38 +145,37 @@ int main(int argc, char **argv)
 		printf("write: err=%d, errno=%d\n", err, errno);
 		goto fail_conn;
 	}
-    }
-
-    printf(" Connection %d Ready - Press Any Key to Continue\n", conn_id);
-    getchar();
-
-    if (sender) {
+        printf("Buffer registered, press any key to continue\n");
+        getchar();
+        printf("Message received buf='%s'\n", buf);
+    } else {
+        /* Send buffer to peer */
+        strcpy(buf, "Hello world!!!");
+        sreq.vec[0].iov_base = buf;
+        sreq.vec[0].iov_len = 20;
+        sreq.vlen = 1;
 	sreq.flags = KDBR_REQ_SIGNATURE | KDBR_REQ_POST_SEND;
 	sreq.connection_id = conn_id;
+        printf("Press any key to send message\n");
+        getchar();
 	err = write(port_fd, &sreq, sizeof(sreq));
 	if (err < 0) {
 		printf("write: err=%d, errno=%d\n", err, errno);
 		goto fail_conn;
 	}
-        printf("Message sent - Press Any Key to Continue\n");
-        getchar();
-    } else {
-        printf("Message received buf='%s'\n", buf);
     }
 
-    ioctl_close_conn(port_fd, conn_id);
+    disconnect(port_fd, conn_id);
     close(port_fd);
 
-    if (!ioctl_unregister_device(kdbr_fd, port)) {
-        printf("kdbr device at port %d unregistered\n", port);
-    }
+    unregister_port(kdbr_fd, reg.port);
     close(kdbr_fd);
-    printf("kdbr fd and port %d closed\n", port);
+    printf("kdbr fd and port %d closed\n", reg.port);
     err = 0;
     goto out;
 
 fail_conn:
-    ioctl_close_conn(port_fd, conn_id);
+    disconnect(port_fd, conn_id);
 
 fail_port:
     close(port_fd);
