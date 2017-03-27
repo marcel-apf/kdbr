@@ -355,7 +355,7 @@ static int kdbr_port_send(struct kdbr_port *port, struct kdbr_req *req)
 				KDBR_ERR_CODE_EMPTY_VEC);
 
 	/* Get peer attributes */
-	if (!req->peer.rqueue) {
+	if (req->connection_id) {
 		conn = get_connection(port, req->connection_id);
 		if (!conn)
 			return post_cqe(port, req->connection_id, req->req_id,
