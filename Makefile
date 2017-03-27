@@ -9,6 +9,8 @@ modules_install:
 
 clean:
 	$(MAKE) -C $(KDIR) M=$(PWD) clean
+	rm -f kdbr_test
+	rm -f cma_test
 
 test:
 	gcc kdbr_test.c -o kdbr_test
@@ -16,5 +18,6 @@ test:
 
 clean_test:
 	rm -f kdbr_test
+	rm -f cma_test
 
 .PHONY: modules modules_install clean clean_test
