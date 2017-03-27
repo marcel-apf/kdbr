@@ -28,7 +28,7 @@
 #include "kdbr.h"
 
 MODULE_LICENSE("GPL v2");
-MODULE_AUTHOR("Marcel Apfelbaum");
+MODULE_AUTHOR("Marcel Apfelbaum & Yuval Shaia");
 
 #define KDBR_MAX_PORTS 255
 
